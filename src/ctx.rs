@@ -11,6 +11,8 @@ pub struct Opts {
     pub poll_secs: u64,
     pub token_stdin: bool,
     pub dry_run: bool,
+    /// `CLOUDFLARE_API_TOKEN` is set. Only its presence is ever read.
+    pub cloudflare_token: bool,
 }
 
 pub struct Ctx<'a> {

@@ -21,6 +21,7 @@ fn convert(res: Res) -> Check {
             command,
         }),
         Res::Failed(e) => Check::Failed(e),
+        Res::Upgrade => Check::Failed("hoist does not take --only; upgrade hoist".into()),
     }
 }
 

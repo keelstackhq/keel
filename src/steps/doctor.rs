@@ -91,7 +91,7 @@ impl Step for Doctor {
             Err(e) => return Ok(Check::Failed(e)),
         };
         // Only keel's own files; bosun and splice commit or leave theirs. Nothing owned: no commit.
-        let owned: Vec<String> = ["keel.toml", ".gitignore", "Cargo.lock"]
+        let owned: Vec<String> = ["keel.toml", "hoist.toml", ".gitignore", "Cargo.lock"]
             .into_iter()
             .filter(|p| cx.dir.join(p).exists())
             .map(String::from)

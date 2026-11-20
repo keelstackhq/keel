@@ -109,7 +109,7 @@ impl Step for Deploy {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::super::testutil::*;
     use super::*;
     use crate::ctx::Opts;

@@ -1,11 +1,13 @@
 //! The steps of `keel up` (spec §5), in order.
 use crate::ctx::Ctx;
 use crate::error::KeelError;
-use crate::step::Step;
+use crate::report::HumanStep;
+use crate::step::{Check, Step};
 
 pub mod agent_env;
 pub mod apps;
 pub mod deploy;
+pub mod dns;
 pub mod doctor;
 pub mod governance;
 pub mod merge;
@@ -25,9 +27,51 @@ pub fn all_steps() -> Vec<Box<dyn Step>> {
         Box::new(token::Token),
         Box::new(agent_env::AgentEnv),
         Box::new(deploy::Deploy),
+        Box::new(dns::Dns),
         Box::new(doctor::Doctor),
         Box::new(merge::Merge),
     ]
+}
+
+/// A hoist `--only SECTION` outcome as a step result. `Done` carries `done_msg`.
+pub(crate) fn hoist_check(
+    res: crate::tools::hoist::Res,
+    id: &str,
+    only: &str,
+    done_msg: &str,
+) -> Check {
+    use crate::tools::hoist::Res;
+    match res {
+        Res::Ok => Check::Done(done_msg.into()),
+        Res::Drift => Check::Todo(format!("hoist reports drift in [{only}]")),
+        Res::Human {
+            title,
+            url,
+            command,
+        } => Check::Human(HumanStep {
+            id: id.into(),
+            title,
+            url,
+            command,
+        }),
+        Res::Failed(e) => Check::Failed(e),
+        Res::Upgrade => Check::Human(HumanStep {
+            id: id.into(),
+            title: format!("Upgrade hoist to a release with [{only}]"),
+            url: String::new(),
+            command: "npm install -g @keelstackhq/hoist@latest".into(),
+        }),
+    }
+}
+
+/// The human step for a Cloudflare step without `CLOUDFLARE_API_TOKEN`.
+pub(crate) fn cloudflare_token_step(id: &str, what: &str) -> Check {
+    Check::Human(HumanStep {
+        id: id.into(),
+        title: format!("Set CLOUDFLARE_API_TOKEN or {what}"),
+        url: "https://dash.cloudflare.com/profile/api-tokens".into(),
+        command: "export CLOUDFLARE_API_TOKEN=... then keel up".into(),
+    })
 }
 
 pub(crate) fn repo(cx: &Ctx) -> Result<String, KeelError> {

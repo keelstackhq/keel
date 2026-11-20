@@ -101,6 +101,8 @@ pub fn run_with(
             poll_secs,
             token_stdin: args.token_stdin,
             dry_run: command == Mode::Plan,
+            cloudflare_token: std::env::var_os("CLOUDFLARE_API_TOKEN")
+                .is_some_and(|v| !v.is_empty()),
         },
         sleep,
         stdin,
