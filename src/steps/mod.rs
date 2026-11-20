@@ -5,6 +5,7 @@ use crate::step::Step;
 
 pub mod agent_env;
 pub mod apps;
+pub mod deploy;
 pub mod doctor;
 pub mod governance;
 pub mod merge;
@@ -13,7 +14,7 @@ pub mod render;
 pub mod settings;
 pub mod token;
 
-/// All nine steps, in order.
+/// All steps, in order.
 pub fn all_steps() -> Vec<Box<dyn Step>> {
     vec![
         Box::new(preflight::Preflight),
@@ -23,6 +24,7 @@ pub fn all_steps() -> Vec<Box<dyn Step>> {
         Box::new(settings::Settings),
         Box::new(token::Token),
         Box::new(agent_env::AgentEnv),
+        Box::new(deploy::Deploy),
         Box::new(doctor::Doctor),
         Box::new(merge::Merge),
     ]
