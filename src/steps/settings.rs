@@ -31,11 +31,11 @@ impl Step for Settings {
     }
 
     fn check(&self, cx: &mut Ctx) -> Result<Check, KeelError> {
-        Ok(convert(hoist::check(cx.runner, &cx.dir)))
+        Ok(convert(hoist::check_skip_cloudflare(cx.runner, &cx.dir)))
     }
 
     fn apply(&self, cx: &mut Ctx) -> Result<Check, KeelError> {
-        match hoist::apply(cx.runner, &cx.dir) {
+        match hoist::apply_skip_cloudflare(cx.runner, &cx.dir) {
             Res::Ok => self.check(cx),
             other => Ok(convert(other)),
         }
@@ -92,8 +92,35 @@ mod tests {
             )
             .on(&["hoist", "--json", "check"], Out::ok(r#"{"ok":true}"#));
         assert!(matches!(run(&r, true), Check::Done(_)));
-        assert_eq!(r.calls()[0].line(), "hoist --json apply --yes");
-        assert_eq!(r.calls()[1].line(), "hoist --json check");
+        assert_eq!(
+            r.calls()[0].line(),
+            "hoist --json apply --yes --skip cloudflare"
+        );
+        assert_eq!(r.calls()[1].line(), "hoist --json check --skip cloudflare");
+    }
+
+    #[test]
+    fn skips_the_cloudflare_sections_and_retries_when_hoist_rejects_the_flag() {
+        let r = FakeRunner::new()
+            .on(
+                &["hoist", "--json", "check", "--skip"],
+                Out::with(2, "", "error: unexpected argument '--skip'"),
+            )
+            .on(
+                &["hoist", "--json", "check"],
+                Out::ok(r#"{"ok":true,"items":[]}"#),
+            );
+        assert!(matches!(run(&r, false), Check::Done(_)));
+        let lines: Vec<String> = r.calls().iter().map(|c| c.line()).collect();
+        assert_eq!(
+            lines,
+            ["hoist --json check --skip cloudflare", "hoist --json check"]
+        );
+        // Exit 2 with hoist JSON is a human step, not a rejected flag: no retry.
+        let body = r#"{"ok":false,"items":[],"human_steps":[{"id":"a","title":"t","url":"u"}]}"#;
+        let r = FakeRunner::new().on(&["hoist", "--json", "apply"], Out::with(2, body, ""));
+        assert!(matches!(run(&r, true), Check::Human(_)));
+        assert_eq!(r.calls().len(), 1);
     }
 
     #[test]

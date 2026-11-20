@@ -54,6 +54,18 @@ pub fn check(r: &dyn Runner, dir: &Path) -> Res {
     check_only(r, dir, None)
 }
 
+/// `hoist --json check --skip cloudflare`, so the `[cloudflare.*]` sections the dns and backup
+/// steps append are left to those steps. `--skip` is assumed until upstream relays flags; a hoist
+/// that rejects it (exit 2 without hoist JSON) gets the plain `check`.
+pub fn check_skip_cloudflare(r: &dyn Runner, dir: &Path) -> Res {
+    let c = Cmd::new("hoist", &["--json", "check", "--skip", "cloudflare"]).dir(dir);
+    let o = r.run(&c);
+    if old_hoist(&o) {
+        return check(r, dir);
+    }
+    check_res(&c, &o)
+}
+
 /// `hoist --json check [--only SECTION]`.
 pub fn check_only(r: &dyn Runner, dir: &Path, only: Option<&str>) -> Res {
     let c = Cmd::new("hoist", &only_args(&["--json", "check"], only)).dir(dir);
@@ -61,19 +73,38 @@ pub fn check_only(r: &dyn Runner, dir: &Path, only: Option<&str>) -> Res {
     if only.is_some() && old_hoist(&o) {
         return Res::Upgrade;
     }
+    check_res(&c, &o)
+}
+
+fn check_res(c: &Cmd, o: &Out) -> Res {
     match o.code {
-        0..=2 => match envelope(&c, &o) {
+        0..=2 => match envelope(c, o) {
             Ok(_) if o.code == 0 => Res::Ok,
             Ok(_) => Res::Drift,
             Err(e) => Res::Failed(e),
         },
-        _ => Res::Failed(failure(&c, &o)),
+        _ => Res::Failed(failure(c, o)),
     }
 }
 
 /// `hoist --json apply --yes` (hoist needs `--yes` without a TTY).
 pub fn apply(r: &dyn Runner, dir: &Path) -> Res {
     apply_only(r, dir, None)
+}
+
+/// `hoist --json apply --yes --skip cloudflare`; same assumption and fallback as
+/// [`check_skip_cloudflare`].
+pub fn apply_skip_cloudflare(r: &dyn Runner, dir: &Path) -> Res {
+    let c = Cmd::new(
+        "hoist",
+        &["--json", "apply", "--yes", "--skip", "cloudflare"],
+    )
+    .dir(dir);
+    let o = r.run(&c);
+    if old_hoist(&o) {
+        return apply(r, dir);
+    }
+    apply_res(&c, &o)
 }
 
 /// `hoist --json apply --yes [--only SECTION]`.
@@ -83,12 +114,16 @@ pub fn apply_only(r: &dyn Runner, dir: &Path, only: Option<&str>) -> Res {
     if only.is_some() && old_hoist(&o) {
         return Res::Upgrade;
     }
+    apply_res(&c, &o)
+}
+
+fn apply_res(c: &Cmd, o: &Out) -> Res {
     match o.code {
-        0 => match envelope(&c, &o) {
+        0 => match envelope(c, o) {
             Ok(_) => Res::Ok,
             Err(e) => Res::Failed(e),
         },
-        2 => match envelope(&c, &o) {
+        2 => match envelope(c, o) {
             Ok(v) => {
                 let h = &v["human_steps"][0];
                 match h["title"].as_str() {
@@ -105,7 +140,7 @@ pub fn apply_only(r: &dyn Runner, dir: &Path, only: Option<&str>) -> Res {
             }
             Err(e) => Res::Failed(e),
         },
-        _ => Res::Failed(failure(&c, &o)),
+        _ => Res::Failed(failure(c, o)),
     }
 }
 

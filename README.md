@@ -36,7 +36,7 @@ Global flags: `-C DIR` (checkout, default `.`), `--json`, `-v`. `up` and `plan` 
 | 2 | apps | Claude and Renovate GitHub Apps installed (human gate) |
 | 3 | render | renders the template (at `template_ref`) and pieces with splice on a branch, commits only the files it wrote |
 | 4 | governance | `bosun init`, optional plan import |
-| 5 | settings | `hoist apply` for repo settings |
+| 5 | settings | `hoist apply` for repo settings (leaves the `[cloudflare.*]` sections to dns and backup) |
 | 6 | token | stores the bot PAT as an environment secret (human gate) |
 | 7 | agent-env | writes `.keel/cloud-setup.sh` for the cloud environment (human gate) |
 | 8 | deploy | `[deploy.fly]`: runs the hull `scripts/fly-setup.sh` (app, volume, secrets, certificate) and stores the production deploy token (needs `fly auth login`) |
