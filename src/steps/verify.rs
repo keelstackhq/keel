@@ -1,4 +1,4 @@
-use super::repo;
+use super::{repo, work_branch};
 use crate::ctx::Ctx;
 use crate::error::KeelError;
 use crate::exec::Cmd;
@@ -34,10 +34,12 @@ fn poll<T>(cx: &Ctx, mut probe: impl FnMut() -> (bool, T)) -> T {
     }
 }
 
-fn wait_for_first_deploy() -> Check {
+fn wait_for_first_deploy(short: &str) -> Check {
     Check::Human(HumanStep {
         id: "verify".into(),
-        title: "Wait for the first deploy (the deploy workflow has not run yet)".into(),
+        title: format!(
+            "Wait for the first deploy (the deploy workflow has not run for merge commit {short} yet)"
+        ),
         url: String::new(),
         command: "keel up".into(),
     })
@@ -61,8 +63,23 @@ impl Step for Verify {
             Ok(b) => b,
             Err(e) => return Ok(Check::Failed(e)),
         };
+        // The run must be the one of the merged commit: an older or newer run of another commit
+        // says nothing about this merge.
+        let branch = match work_branch(cx) {
+            Ok(b) => b,
+            Err(e) => return Ok(Check::Failed(e)),
+        };
+        let sha = match gh::pr_view(cx.runner, &cx.dir, &repo, &branch) {
+            Some(p) if !p.merge_commit.is_empty() => p.merge_commit,
+            _ => {
+                return Ok(Check::Failed(format!(
+                    "cannot read the merge commit of the pull request of {branch}: is it merged? (`gh pr view {branch} --repo {repo} --json mergeCommit`)"
+                )));
+            }
+        };
+        let short = &sha[..sha.len().min(7)];
         let run = poll(cx, || {
-            let r = gh::latest_run(cx.runner, &repo, WORKFLOW, &default);
+            let r = gh::run_for_commit(cx.runner, &repo, WORKFLOW, &default, &sha);
             let done = match &r {
                 Ok(Some(run)) => run.status == "completed",
                 _ => false,
@@ -71,16 +88,16 @@ impl Step for Verify {
         });
         match run {
             Err(e) => return Ok(Check::Failed(e)),
-            Ok(None) => return Ok(wait_for_first_deploy()),
+            Ok(None) => return Ok(wait_for_first_deploy(short)),
             Ok(Some(run)) if run.status != "completed" => {
                 return Ok(Check::Failed(format!(
-                    "the deploy workflow is still {} after {}s: {}; rerun `keel up` later",
+                    "the deploy workflow for {short} is still {} after {}s: {}; rerun `keel up` later",
                     run.status, cx.opts.wait_secs, run.url
                 )));
             }
             Ok(Some(run)) if run.conclusion != "success" => {
                 return Ok(Check::Failed(format!(
-                    "the deploy workflow {}: {}",
+                    "the deploy workflow for {short} {}: {}",
                     run.conclusion, run.url
                 )));
             }
@@ -144,8 +161,17 @@ mod tests {
 
     const MAIN: &str = r#"{"defaultBranchRef":{"name":"main"}}"#;
 
+    const SHA: &str = "deadbeef1234567890";
+    const MERGED: &str = r#"{"number":7,"url":"https://gh/pull/7","state":"MERGED","headRefOid":"abc123","mergeCommit":{"oid":"deadbeef1234567890"}}"#;
+
     fn base() -> FakeRunner {
-        FakeRunner::new().on(&["gh", "repo", "view"], Out::ok(MAIN))
+        FakeRunner::new()
+            .on(&["gh", "repo", "view"], Out::ok(MAIN))
+            .on(
+                &["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                Out::ok("keel/bootstrap\n"),
+            )
+            .on(&["gh", "pr", "view"], Out::ok(MERGED))
     }
 
     fn runs(json: &str) -> Out {
@@ -165,8 +191,7 @@ mod tests {
         (c, cx.verify.clone(), slept.get())
     }
 
-    const OK_RUN: &str =
-        r#"[{"status":"completed","conclusion":"success","url":"https://gh/run/1"}]"#;
+    const OK_RUN: &str = r#"[{"status":"completed","conclusion":"success","url":"https://gh/run/1","headSha":"deadbeef1234567890"}]"#;
 
     #[test]
     fn no_fly_is_done_and_records_nothing() {
@@ -207,7 +232,8 @@ mod tests {
             )
         );
         let lines: Vec<String> = r.calls().iter().map(|c| c.line()).collect();
-        assert!(lines.contains(&"gh run list --repo owner/name --workflow deploy.yml --branch main --limit 1 --json status,conclusion,url".to_string()));
+        assert!(lines.contains(&"gh run list --repo owner/name --workflow deploy.yml --branch main --limit 20 --json status,conclusion,url,headSha".to_string()));
+        assert!(lines.contains(&"gh pr view keel/bootstrap --repo owner/name --json number,url,state,headRefOid,mergeCommit".to_string()));
         assert!(
             lines
                 .last()
@@ -279,7 +305,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let r = base().on(
             &["gh", "run", "list"],
-            runs(r#"[{"status":"completed","conclusion":"failure","url":"https://gh/run/9"}]"#),
+            runs(r#"[{"status":"completed","conclusion":"failure","url":"https://gh/run/9","headSha":"deadbeef1234567890"}]"#),
         );
         let (c, v, _) = go(&r, d.path(), 0);
         assert!(
@@ -298,6 +324,53 @@ mod tests {
         assert_eq!(h.command, "keel up");
         assert!(h.title.contains("first deploy"));
         assert_eq!(slept, 2);
+    }
+
+    #[test]
+    fn only_the_run_of_the_merge_commit_counts() {
+        let d = tempfile::tempdir().unwrap();
+        // Newer and older runs of other commits are ignored, even a failed one.
+        let others = r#"[{"status":"completed","conclusion":"failure","url":"https://gh/run/3","headSha":"1111"},{"status":"completed","conclusion":"success","url":"https://gh/run/0","headSha":"2222"}]"#;
+        let r = base().on(&["gh", "run", "list"], runs(others));
+        let (c, v, slept) = go(&r, d.path(), 10);
+        let Check::Human(h) = c else { panic!("{c:?}") };
+        assert!(h.title.contains("first deploy"));
+        assert_eq!(slept, 2);
+        assert_eq!(v.unwrap().healthz, Healthz::NotRun);
+        // The matching run is picked from among them.
+        let mixed = format!(
+            "[{},{}]",
+            r#"{"status":"completed","conclusion":"failure","url":"https://gh/run/3","headSha":"1111"}"#,
+            r#"{"status":"completed","conclusion":"success","url":"https://gh/run/2","headSha":"deadbeef1234567890"}"#
+        );
+        let r = base()
+            .on(&["gh", "run", "list"], runs(&mixed))
+            .on(&["curl"], Out::ok("200"));
+        let (c, _, _) = go(&r, d.path(), 0);
+        assert!(matches!(c, Check::Done(_)), "{c:?}");
+        // A run of the merge commit that is still going is polled, not failed early.
+        let going =
+            format!(r#"[{{"status":"in_progress","conclusion":"","url":"u","headSha":"{SHA}"}}]"#);
+        let r = base().on(&["gh", "run", "list"], runs(&going));
+        let (c, _, slept) = go(&r, d.path(), 10);
+        assert!(matches!(c, Check::Failed(m) if m.contains("still in_progress")));
+        assert_eq!(slept, 2);
+    }
+
+    #[test]
+    fn an_unreadable_merge_commit_fails_without_listing_runs() {
+        let d = tempfile::tempdir().unwrap();
+        let r = base().on(
+            &["gh", "pr", "view"],
+            Out::ok(r#"{"number":7,"url":"u","state":"OPEN","headRefOid":"a","mergeCommit":null}"#),
+        );
+        let (c, _, _) = go(&r, d.path(), 0);
+        assert!(matches!(c, Check::Failed(m) if m.contains("merge commit")));
+        assert!(
+            r.calls()
+                .iter()
+                .all(|c| c.args.get(1).map(String::as_str) != Some("run"))
+        );
     }
 
     #[test]

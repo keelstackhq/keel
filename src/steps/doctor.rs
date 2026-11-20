@@ -173,7 +173,7 @@ mod tests {
         let pos = |p: &str| l.iter().position(|x| x.starts_with(p)).unwrap();
         assert!(pos("git push") < pos("bosun --json pr --single --ready"));
         assert!(!l.iter().any(|x| x.starts_with("gh pr create")), "{l:?}");
-        assert!(!l.iter().any(|x| x.contains("merge")), "{l:?}");
+        assert!(!l.iter().any(|x| x.starts_with("gh pr merge")), "{l:?}");
         // A bosun failure other than exit 2 fails the step.
         let r = fake()
             .on(&["gh", "pr", "view"], Out::with(1, "", "none"))
@@ -337,7 +337,7 @@ mod tests {
         let _ = go(&r, false);
         assert!(
             lines(&r).contains(
-                &"gh pr view keel/bootstrap --repo owner/name --json number,url,state,headRefOid"
+                &"gh pr view keel/bootstrap --repo owner/name --json number,url,state,headRefOid,mergeCommit"
                     .to_string()
             )
         );

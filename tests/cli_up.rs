@@ -31,7 +31,7 @@ case "$name $*" in
   "gh repo view"*) echo '{"defaultBranchRef":{"name":"main"}}';;
   "gh pr view"*)
     st=OPEN; { [ "$KEEL_SCENARIO" = done ] || [ -f "$KEEL_LOG/merged" ]; } && st=MERGED
-    echo '{"number":7,"url":"https://github.com/owner/name/pull/7","state":"'$st'","headRefOid":"abc123"}';;
+    echo '{"number":7,"url":"https://github.com/owner/name/pull/7","state":"'$st'","headRefOid":"abc123","mergeCommit":{"oid":"c0ffee1"}}';;
   "git ls-remote"*) printf '3f4a65fda568cdd20c76168ed156d25a28ba5630\trefs/tags/v0.13.0\n';;
   "splice --version") echo "splice 0.6.0";;
   "splice --json pieces"*) echo "error: unrecognized subcommand 'pieces'" >&2; exit 2;;
@@ -50,7 +50,7 @@ case "$name $*" in
     [ "$KEEL_SCENARIO" = done ] || [ -f "$KEEL_LOG/fly_setup" ] || exit 1
     echo '{}';;
   "fly ips list"*) echo '[{"Address":"1.2.3.4","Type":"v4"},{"Address":"2a09::1","Type":"v6"}]';;
-  "gh run list"*) echo '[{"status":"completed","conclusion":"success","url":"https://github.com/owner/name/actions/runs/1"}]';;
+  "gh run list"*) echo '[{"status":"completed","conclusion":"success","url":"https://github.com/owner/name/actions/runs/1","headSha":"c0ffee1"}]';;
   curl*) printf 200;;
   "hoist --version") echo "hoist 0.5.1";;
   "hoist --json check --area cloudflare"*) echo '{"ok":true,"exit_code":0,"items":[{"kind":"dns_record","key":"k","action":"ok"},{"kind":"r2_bucket","key":"b","action":"ok"},{"kind":"r2_lifecycle","key":"l","action":"ok"},{"kind":"r2_token","key":"t","action":"ok"}],"human_steps":[]}';;
