@@ -21,7 +21,7 @@ Node 24+ (checked in preflight).
 - `keel doctor`: check the toolchain and the repo for drift (no installs).
 
 Global flags: `-C DIR` (checkout, default `.`), `--json`, `-v`. `up` and `plan` also take
-`--repo`, `--template rust|ts|SOURCE`, `--pieces ID[:NAME],...`, `--plan FILE`, `--wait SECS`,
+`--repo`, `--template rust|ts|SOURCE`, `--template-ref REF`, `--pieces ID[:NAME],...`, `--plan FILE`, `--wait SECS`,
 `--token-stdin`, `--confirm agent-env`.
 
 ## Steps
@@ -30,7 +30,7 @@ Global flags: `-C DIR` (checkout, default `.`), `--json`, `-v`. `up` and `plan` 
 |---|------|--------------|
 | 1 | preflight | checks node, gh, git and the repo; installs pinned tools (checksum verified) |
 | 2 | apps | Claude and Renovate GitHub Apps installed (human gate) |
-| 3 | render | renders the template and pieces with splice on a branch, commits |
+| 3 | render | renders the template (at `template_ref`) and pieces with splice on a branch, commits only the files it wrote |
 | 4 | governance | `bosun init`, optional plan import |
 | 5 | settings | `hoist apply` for repo settings |
 | 6 | token | stores the bot PAT as an environment secret (human gate) |
@@ -45,6 +45,7 @@ keel never merges, tags, releases, publishes or force-pushes.
 ```toml
 repo = "owner/name"
 template = "rust"                 # or a splice source
+template_ref = "v0.13.0"          # git ref; from the hull pin for rust/ts, required for a custom source
 pieces = ["rust-cli:my-cli"]
 plan = "docs/plan.md"             # optional
 branch = "keel/bootstrap"         # optional

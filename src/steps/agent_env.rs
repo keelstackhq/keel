@@ -183,7 +183,8 @@ mod tests {
             .arg(&f)
             .current_dir(d.path())
             .env("PATH", path)
-            .env("SSL_CERT_FILE", &ca)
+            .env_remove("SSL_CERT_FILE")
+            .env("PROXY_CA_BUNDLE", &ca)
             .env("KEEL_PROFILE_DIR", &prof)
             .output()
             .ok()?;
@@ -223,5 +224,47 @@ mod tests {
         assert!(ok, "never a non-zero exit");
         assert!(out.contains("CA=/"), "{out}");
         assert!(wrote, "fallback runs when the hook fails");
+    }
+
+    #[test]
+    fn prelude_calls_only_the_root_hook_and_trusts_only_the_proxy_bundle() {
+        assert!(PRELUDE.contains("./scripts/proxy-ca.sh install"));
+        assert!(!PRELUDE.contains("./*/"), "no per-checkout loop");
+        assert!(
+            !PRELUDE.contains("${SSL_CERT_FILE"),
+            "SSL_CERT_FILE is not a CA source"
+        );
+        assert!(
+            PRELUDE.contains("PROXY_CA_BUNDLE") && PRELUDE.contains("/root/.ccr/ca-bundle.crt")
+        );
+        // A hook in a sub-directory never runs; SSL_CERT_FILE alone writes no fallback file.
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("sub/scripts")).unwrap();
+        std::fs::write(
+            d.path().join("sub/scripts/proxy-ca.sh"),
+            "touch ../../ran\n",
+        )
+        .unwrap();
+        let ca = d.path().join("ca.pem");
+        std::fs::write(&ca, "x").unwrap();
+        let prof = d.path().join("profile");
+        std::fs::create_dir(&prof).unwrap();
+        let f = d.path().join("p.sh");
+        std::fs::write(&f, PRELUDE).unwrap();
+        let Ok(o) = std::process::Command::new("bash")
+            .arg(&f)
+            .current_dir(d.path())
+            .env_remove("PROXY_CA_BUNDLE")
+            .env("SSL_CERT_FILE", &ca)
+            .env("KEEL_PROFILE_DIR", &prof)
+            .output()
+        else {
+            return;
+        };
+        assert!(o.status.success());
+        assert!(!d.path().join("ran").exists());
+        if !std::path::Path::new("/root/.ccr/ca-bundle.crt").exists() {
+            assert!(!prof.join("keel-proxy-ca.sh").exists());
+        }
     }
 }

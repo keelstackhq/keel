@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
 # keel: trust the agent proxy's CA so git, npm, cargo and pip verify TLS behind it.
-# Never fails the setup script.
+# Runs at the repo root (cwd). Never fails the setup script.
 ran=0
-for d in . ./*/; do
-  [ -f "$d/scripts/proxy-ca.sh" ] || continue
-  if (cd "$d" && bash scripts/proxy-ca.sh install); then
+if [ -f ./scripts/proxy-ca.sh ]; then
+  if bash ./scripts/proxy-ca.sh install; then
     ran=1
   fi
-done
+fi
 ca=""
-if [ -f /root/.ccr/ca-bundle.crt ]; then
+if [ -n "${PROXY_CA_BUNDLE:-}" ] && [ -f "$PROXY_CA_BUNDLE" ]; then
+  ca="$PROXY_CA_BUNDLE"
+elif [ -f /root/.ccr/ca-bundle.crt ]; then
   ca=/root/.ccr/ca-bundle.crt
-elif [ -n "${SSL_CERT_FILE:-}" ] && [ -f "$SSL_CERT_FILE" ]; then
-  ca="$SSL_CERT_FILE"
 fi
 if [ -n "$ca" ]; then
   if [ "$ran" = 0 ]; then

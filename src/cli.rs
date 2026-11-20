@@ -39,6 +39,9 @@ pub struct UpArgs {
     /// rust, ts, or a splice source.
     #[arg(long)]
     pub template: Option<String>,
+    /// Git ref (tag, branch or sha) of the template; `rust`/`ts` default to the hull pin.
+    #[arg(long)]
+    pub template_ref: Option<String>,
     /// Splice pieces: ID or ID:NAME, comma separated.
     #[arg(long)]
     pub pieces: Option<String>,

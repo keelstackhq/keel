@@ -7,6 +7,8 @@ splice = "0.6.0"
 bosun = "0.21.0"
 hoist = "0.5.1"
 berth = "0.2.1"
+# hull template tag (= commit 3f4a65fda568cdd20c76168ed156d25a28ba5630): keel renders `rust`/`ts` at it.
+hull = "v0.13.0"
 
 [sha512.splice]
 version = "0.6.0"

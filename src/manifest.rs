@@ -1,5 +1,6 @@
 use crate::cli::UpArgs;
 use crate::error::KeelError;
+use crate::pins::Pins;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -44,6 +45,8 @@ pub struct Manifest {
     pub repo: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pieces: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -85,9 +88,31 @@ impl Manifest {
     }
 
     pub fn write(&self, dir: &Path) -> Result<(), KeelError> {
+        if let Some(r) = &self.repo {
+            validate_repo(r)?;
+        }
         let text = toml::to_string(self).map_err(|e| manifest_err(e.to_string()))?;
-        std::fs::write(dir.join(FILE), text)
-            .map_err(|e| manifest_err(format!("cannot write it: {e}")))
+        // Atomic: a temp file in the same directory, then a rename over keel.toml.
+        let tmp = dir.join(format!(".{FILE}.{}.tmp", std::process::id()));
+        let res = std::fs::write(&tmp, text).and_then(|()| std::fs::rename(&tmp, dir.join(FILE)));
+        if let Err(e) = res {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(manifest_err(format!("cannot write it: {e}")));
+        }
+        Ok(())
+    }
+
+    /// For the `rust`/`ts` templates without a `template_ref`, take the `hull` pin. Returns
+    /// whether the manifest changed. A custom source gets no default: it needs an explicit ref.
+    pub fn default_template_ref(&mut self, pins: &Pins) -> bool {
+        let hull = matches!(self.template.as_deref(), Some("rust" | "ts"));
+        match pins.version("hull") {
+            Some(v) if hull && self.template_ref.is_none() => {
+                self.template_ref = Some(v.to_string());
+                true
+            }
+            _ => false,
+        }
     }
 
     pub fn branch_name(&self) -> &str {
@@ -98,8 +123,16 @@ impl Manifest {
     /// manifest is a usage error naming the key. Returns whether the manifest changed.
     pub fn merge_flags(&mut self, args: &UpArgs) -> Result<bool, KeelError> {
         let mut changed = false;
+        if let Some(r) = &args.repo {
+            validate_repo(r)?;
+        }
         changed |= merge_opt("repo", &mut self.repo, args.repo.as_deref())?;
         changed |= merge_opt("template", &mut self.template, args.template.as_deref())?;
+        changed |= merge_opt(
+            "template-ref",
+            &mut self.template_ref,
+            args.template_ref.as_deref(),
+        )?;
         changed |= merge_opt("plan", &mut self.plan, args.plan.as_deref())?;
         if let Some(p) = &args.pieces {
             let pieces = parse_pieces(p)?;
@@ -128,6 +161,26 @@ impl Manifest {
             }
         }
         Ok(changed)
+    }
+}
+
+/// `OWNER/NAME`: `^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$` and no `..`.
+pub fn validate_repo(repo: &str) -> Result<(), KeelError> {
+    let ok = repo.split_once('/').is_some_and(|(owner, name)| {
+        !owner.is_empty()
+            && owner.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+            && !name.is_empty()
+            && name != "."
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    }) && !repo.contains("..");
+    if ok {
+        Ok(())
+    } else {
+        Err(KeelError::Usage(format!(
+            "--repo {repo:?}: expected OWNER/NAME (letters, digits, `-`; the name may also have `.` and `_`), e.g. keelstackhq/my-app"
+        )))
     }
 }
 
@@ -266,5 +319,83 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(Manifest::load(dir.path()).unwrap(), Manifest::default());
         assert!(!Manifest::exists(dir.path()));
+    }
+
+    #[test]
+    fn repo_must_be_owner_slash_name() {
+        for ok in ["o/n", "Key-stone/my_app.rs", "a1/b-2"] {
+            validate_repo(ok).unwrap();
+        }
+        for bad in [
+            "", "o", "o/", "/n", "o/n/x", "o/..", "o/a..b", "o/.", "o_x/n", "o/n x", "o/n;rm",
+            "../n", "o/n\n",
+        ] {
+            let e = Manifest::default()
+                .merge_flags(&UpArgs {
+                    repo: Some(bad.into()),
+                    ..args()
+                })
+                .unwrap_err();
+            assert!(matches!(e, KeelError::Usage(_)), "{bad:?}");
+            assert_eq!(e.exit_code(), 2);
+        }
+    }
+
+    #[test]
+    fn write_is_atomic_and_leaves_no_temp_file() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join(FILE), "repo = \"old/old\"\n").unwrap();
+        let m = Manifest {
+            repo: Some("o/n".into()),
+            ..Manifest::default()
+        };
+        m.write(d.path()).unwrap();
+        assert_eq!(Manifest::load(d.path()).unwrap(), m);
+        let names: Vec<_> = std::fs::read_dir(d.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(names, [FILE]);
+        // A bad repo never reaches the disk.
+        let bad = Manifest {
+            repo: Some("../x".into()),
+            ..Manifest::default()
+        };
+        assert!(matches!(bad.write(d.path()), Err(KeelError::Usage(_))));
+        assert_eq!(Manifest::load(d.path()).unwrap(), m);
+    }
+
+    #[test]
+    fn template_ref_comes_from_the_hull_pin_for_hull_templates_only() {
+        let pins = Pins::from_texts("t", "[pins]\nhull = \"v1\"\n", None).unwrap();
+        let mut m = Manifest::parse("template = \"rust\"\n").unwrap();
+        assert!(m.default_template_ref(&pins));
+        assert_eq!(m.template_ref.as_deref(), Some("v1"));
+        assert!(!m.default_template_ref(&pins));
+        let mut m = Manifest::parse("template = \"gh:x/y\"\n").unwrap();
+        assert!(!m.default_template_ref(&pins));
+        assert_eq!(m.template_ref, None);
+        m.merge_flags(&UpArgs {
+            template_ref: Some("v9".into()),
+            ..args()
+        })
+        .unwrap();
+        assert_eq!(m.template_ref.as_deref(), Some("v9"));
+        // A repo pins.toml `hull` overrides the embedded pin.
+        let pins = Pins::from_texts(
+            "t",
+            "[pins]\nhull = \"v1\"\n",
+            Some("[pins]\nhull = \"v2\"\n"),
+        )
+        .unwrap();
+        let mut m = Manifest::parse("template = \"ts\"\n").unwrap();
+        m.default_template_ref(&pins);
+        assert_eq!(m.template_ref.as_deref(), Some("v2"));
+    }
+
+    #[test]
+    fn embedded_pins_pin_hull_to_v0_13_0() {
+        let pins = Pins::from_texts("e", crate::pins::EMBEDDED, None).unwrap();
+        assert_eq!(pins.version("hull"), Some("v0.13.0"));
     }
 }

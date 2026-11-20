@@ -36,6 +36,11 @@ impl Step for Render {
         let tpl = template(cx)?;
         let src = splice::source(&tpl).to_string();
         let r = cx.runner;
+        let Some(git_ref) = cx.manifest.template_ref.clone() else {
+            return Ok(Check::Failed(format!(
+                "no template_ref for {src}: pass --template-ref REF (tag, branch or sha) or set `template_ref` in keel.toml"
+            )));
+        };
         let lock_before = cx.dir.join(".splice/lock.toml").is_file();
 
         if !lock_before {
@@ -70,19 +75,21 @@ impl Step for Render {
         }
         // The branch may already hold the render (a re-run from a fresh clone).
         let rendered = cx.dir.join(".splice/lock.toml").is_file();
+        let mut render_files: Vec<String> = Vec::new();
         if !rendered {
             // `splice new` refuses a dirty tree: commit keel.toml (only it) on the branch first.
             if let Err(e) = git::commit_path(r, &cx.dir, "keel.toml", "keel: add keel.toml") {
                 return Ok(Check::Failed(e));
             }
             let rust = src == splice::RUST_SOURCE;
-            let c = splice::new_cmd(&cx.dir, &src, &cx.manifest.pieces, rust);
+            let c = splice::new_cmd(&cx.dir, &src, &git_ref, &cx.manifest.pieces, rust);
             let o = r.run(&c);
             if o.code != 0 {
                 return Ok(Check::Failed(tools::failure(&c, &o)));
             }
-            if tools::json(&o).is_none() {
-                return Ok(Check::Failed(tools::not_json(&c)));
+            match tools::json(&o) {
+                Some(v) => render_files = splice::render_files(&v),
+                None => return Ok(Check::Failed(tools::not_json(&c))),
             }
         }
         let lockfile = cx.dir.join("Cargo.toml").is_file() && !cx.dir.join("Cargo.lock").is_file();
@@ -109,7 +116,15 @@ impl Step for Render {
             }
             res
         } else {
-            git::commit_all(r, &cx.dir, &format!("keel: render {tpl}"))
+            // Only what the render wrote, plus what keel itself changed: never `git add -A`.
+            let mut paths = render_files;
+            if lockfile {
+                paths.push("Cargo.lock".into());
+            }
+            if ignored {
+                paths.push(".gitignore".into());
+            }
+            git::commit_paths(r, &cx.dir, &paths, &format!("keel: render {tpl}"))
         };
         if let Err(e) = committed {
             return Ok(Check::Failed(e));
@@ -143,7 +158,9 @@ mod tests {
             )
             .on(
                 &["splice", "--json", "--yes", "new"],
-                Out::ok(r#"{"ok":true}"#),
+                Out::ok(
+                    r#"{"ok":true,"changes":[{"path":"src/main.rs","action":"create"},{"path":"skipped.txt","action":"skip"}]}"#,
+                ),
             )
             .on(&["cargo", "generate-lockfile"], Out::ok(""))
             .on(&["git", "status", "--porcelain"], Out::ok("?? keel.toml\n"))
@@ -203,13 +220,25 @@ mod tests {
                 .position(|x| x == s)
                 .unwrap_or_else(|| panic!("{s} in {l:?}"))
         };
-        let new = "splice --json --yes new gh:keelstackhq/hull//template-rust . --force --piece rust-cli:my-cli --data no_placeholder=true";
+        let new = "splice --json --yes new gh:keelstackhq/hull//template-rust . --ref v0.13.0 --force --piece rust-cli:my-cli --data no_placeholder=true";
         let kc = "git commit -m keel: add keel.toml -- keel.toml";
         assert!(pos("git checkout -b keel/bootstrap") < pos("git add -- keel.toml"));
         assert!(pos("git add -- keel.toml") < pos(kc));
         assert!(pos(kc) < pos(new));
-        assert!(pos(new) < pos("git add -A -- . :(exclude).keel"));
-        assert!(pos("git add -A -- . :(exclude).keel") < pos("git commit -m keel: render rust"));
+        let add = "git add -- .splice/lock.toml src/main.rs .gitignore";
+        assert!(pos(new) < pos(add));
+        assert!(
+            pos(add)
+                < pos(
+                    "git commit -m keel: render rust -- .splice/lock.toml src/main.rs .gitignore"
+                )
+        );
+        assert!(!l.iter().any(|x| x.contains("skipped.txt")), "{l:?}");
+        assert!(
+            !l.iter()
+                .any(|x| x.contains(" -A") || x.contains("commit -a")),
+            "{l:?}"
+        );
         assert_eq!(
             r.calls()
                 .iter()
@@ -241,7 +270,7 @@ mod tests {
         let _ = apply(&r, d.path(), "ts");
         assert!(
             lines(&r).contains(
-                &"splice --json --yes new gh:keelstackhq/hull//template . --force --piece rust-cli:my-cli"
+                &"splice --json --yes new gh:keelstackhq/hull//template . --ref v0.13.0 --force --piece rust-cli:my-cli"
                     .to_string()
             )
         );
@@ -292,6 +321,31 @@ mod tests {
     }
 
     #[test]
+    fn custom_source_without_a_template_ref_fails_asking_for_one() {
+        let d = tempfile::tempdir().unwrap();
+        let r = fake();
+        let mut m = manifest("gh:x/y");
+        m.template_ref = None;
+        let mut cx = ctx(
+            &r,
+            d.path().to_path_buf(),
+            m,
+            PINS,
+            Opts::default(),
+            &no_sleep,
+            &no_stdin,
+        );
+        let Check::Failed(e) = Render.apply(&mut cx).unwrap() else {
+            panic!()
+        };
+        assert!(
+            e.contains("--template-ref") && e.contains("template_ref"),
+            "{e}"
+        );
+        assert!(lines(&r).is_empty(), "nothing runs before the ref is known");
+    }
+
+    #[test]
     fn splice_conflict_fails() {
         let d = tempfile::tempdir().unwrap();
         let r = fake().on(
@@ -337,8 +391,8 @@ mod tests {
         let p = |s: &str| l.iter().position(|x| x == s).unwrap();
         assert!(
             p(
-                "splice --json --yes new gh:keelstackhq/hull//template-rust . --force --piece rust-cli:my-cli --data no_placeholder=true"
-            ) < p("git add -A -- . :(exclude).keel")
+                "splice --json --yes new gh:keelstackhq/hull//template-rust . --ref v0.13.0 --force --piece rust-cli:my-cli --data no_placeholder=true"
+            ) < p("git add -- .splice/lock.toml src/main.rs .gitignore")
         );
     }
 

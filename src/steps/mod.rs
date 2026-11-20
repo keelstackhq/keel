@@ -98,6 +98,7 @@ pub(crate) mod testutil {
         Manifest {
             repo: Some("owner/name".into()),
             template: Some(template.into()),
+            template_ref: Some("v0.13.0".into()),
             pieces: vec!["rust-cli:my-cli".into()],
             ..Manifest::default()
         }

@@ -124,7 +124,24 @@ pub fn ensure_ignored(dir: &Path, entry: &str) -> std::io::Result<bool> {
 /// Commit only `path` when it has uncommitted changes (or is untracked); other staged or
 /// modified files are left alone.
 pub fn commit_path(r: &dyn Runner, dir: &Path, path: &str, message: &str) -> Result<(), String> {
-    let st = Cmd::new("git", &["status", "--porcelain", "--", path]).dir(dir);
+    commit_paths(r, dir, &[path.to_string()], message)
+}
+
+/// Stage and commit exactly `paths`, never anything else: no `git add -A`,
+/// no `commit -a`. Nothing to commit (or no path) is fine; callers pass paths that exist.
+pub fn commit_paths(
+    r: &dyn Runner,
+    dir: &Path,
+    paths: &[String],
+    message: &str,
+) -> Result<(), String> {
+    let paths: Vec<&str> = paths.iter().map(String::as_str).collect();
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let mut st = vec!["status", "--porcelain", "--"];
+    st.extend(&paths);
+    let st = Cmd::new("git", &st).dir(dir);
     let o = r.run(&st);
     if o.code != 0 {
         return Err(failure(&st, &o));
@@ -132,29 +149,18 @@ pub fn commit_path(r: &dyn Runner, dir: &Path, path: &str, message: &str) -> Res
     if o.stdout.trim().is_empty() {
         return Ok(());
     }
-    let add = Cmd::new("git", &["add", "--", path]).dir(dir);
+    let mut add = vec!["add", "--"];
+    add.extend(&paths);
+    let add = Cmd::new("git", &add).dir(dir);
     let o = r.run(&add);
     if o.code != 0 {
         return Err(failure(&add, &o));
     }
-    let c = Cmd::new("git", &["commit", "-m", message, "--", path]).dir(dir);
+    let mut c = vec!["commit", "-m", message, "--"];
+    c.extend(&paths);
+    let c = Cmd::new("git", &c).dir(dir);
     let o = r.run(&c);
     if o.code != 0 {
-        return Err(failure(&c, &o));
-    }
-    Ok(())
-}
-
-/// `git add -A` (never `.keel/`, keel's own scratch dir) then commit; "nothing to commit" is fine.
-pub fn commit_all(r: &dyn Runner, dir: &Path, message: &str) -> Result<(), String> {
-    let add = Cmd::new("git", &["add", "-A", "--", ".", ":(exclude).keel"]).dir(dir);
-    let o = r.run(&add);
-    if o.code != 0 {
-        return Err(failure(&add, &o));
-    }
-    let c = Cmd::new("git", &["commit", "-m", message]).dir(dir);
-    let o = r.run(&c);
-    if o.code != 0 && !o.stdout.contains("nothing to commit") {
         return Err(failure(&c, &o));
     }
     Ok(())
@@ -220,12 +226,40 @@ mod tests {
     }
 
     #[test]
-    fn commit_all_excludes_keel_dir() {
+    fn commit_paths_stages_only_the_given_files() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("a.txt"), "").unwrap();
         let r = FakeRunner::new()
+            .on(&["git", "status"], Out::ok("?? a.txt\n"))
             .on(&["git", "add"], Out::ok(""))
             .on(&["git", "commit"], Out::ok(""));
-        commit_all(&r, Path::new("."), "m").unwrap();
-        assert_eq!(lines(&r)[0], "git add -A -- . :(exclude).keel");
+        commit_paths(&r, d.path(), &["a.txt".into(), "b.txt".into()], "m").unwrap();
+        let l = lines(&r);
+        assert_eq!(l[1], "git add -- a.txt b.txt");
+        assert_eq!(l[2], "git commit -m m -- a.txt b.txt");
+        assert!(
+            !l.iter().any(|x| x.contains("-A") || x.contains(" -a")),
+            "{l:?}"
+        );
+    }
+
+    #[test]
+    fn commit_paths_with_nothing_to_commit_runs_no_add_or_commit() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("a.txt"), "").unwrap();
+        let r = FakeRunner::new().on(&["git", "status"], Out::ok(""));
+        commit_paths(&r, d.path(), &["a.txt".into()], "m").unwrap();
+        assert_eq!(lines(&r).len(), 1);
+        let r = FakeRunner::new();
+        commit_paths(&r, d.path(), &[], "m").unwrap();
+        assert!(lines(&r).is_empty());
+    }
+
+    #[test]
+    fn source_never_adds_everything() {
+        let src = include_str!("git.rs");
+        let (code, _) = src.split_once("#[cfg(test)]").unwrap();
+        assert!(!code.contains("\"-A\"") && !code.contains("\"-a\""));
     }
 
     #[test]

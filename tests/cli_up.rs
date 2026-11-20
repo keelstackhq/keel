@@ -79,7 +79,7 @@ impl Env {
         let pins = root.path().join("pins.toml");
         std::fs::write(
             &pins,
-            "[pins]\nsplice = \"0.6.0\"\nbosun = \"0.21.0\"\nhoist = \"0.5.1\"\nberth = \"0.2.1\"\n",
+            "[pins]\nsplice = \"0.6.0\"\nbosun = \"0.21.0\"\nhoist = \"0.5.1\"\nberth = \"0.2.1\"\nhull = \"v0.13.0\"\n",
         )
         .unwrap();
         Env {
@@ -167,6 +167,31 @@ fn first_run_stops_at_apps_with_one_json_object() {
     // keel.toml was written first.
     let m = std::fs::read_to_string(env.repo.join("keel.toml")).unwrap();
     assert!(m.contains("repo = \"owner/name\""), "{m}");
+    assert!(m.contains("template_ref = \"v0.13.0\""), "{m}");
+    // keel.toml is written through a temp file that is renamed away.
+    let names: Vec<String> = std::fs::read_dir(&env.repo)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert!(!names.iter().any(|n| n.ends_with(".tmp")), "{names:?}");
+}
+
+#[test]
+fn invalid_repo_is_a_usage_error_exit_2_and_writes_nothing() {
+    for bad in ["owner", "../x/y", "o/n;x", "o/.."] {
+        let env = Env::new();
+        let (code, out, _) = run(
+            &env,
+            "fresh",
+            &["--json".into(), "up".into(), "--repo".into(), bad.into()],
+            "",
+        );
+        assert_eq!(code, 2, "{bad}: {out}");
+        let v = one_json(&out);
+        assert_eq!(v["exit_code"], 2);
+        assert_eq!(v["status"], "error");
+        assert!(!env.repo.join("keel.toml").exists());
+    }
 }
 
 #[test]
@@ -255,6 +280,11 @@ fn token_goes_to_gh_stdin_only() {
     );
     assert_eq!(code, 5, "{out} {err}"); // then the agent-env gate
     let v = one_json(&out);
+    let calls = env.read("calls.log");
+    assert!(
+        !calls.contains("add -A") && !calls.contains("commit -a"),
+        "{calls}"
+    );
     assert_eq!(v["human_step"]["id"], "agent-env");
     assert_eq!(v["steps"][5]["id"], "token");
     assert_eq!(v["steps"][5]["action"], "done");

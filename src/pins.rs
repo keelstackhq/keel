@@ -113,6 +113,11 @@ impl Pins {
         Ok(pins)
     }
 
+    /// A `[pins]` version (repo `pins.toml` already applied), e.g. `hull`.
+    pub fn version(&self, name: &str) -> Option<&str> {
+        self.versions.get(name).map(String::as_str)
+    }
+
     pub fn tool(&self, name: &str) -> Option<ToolPin> {
         let version = self.versions.get(name)?.clone();
         let sha512 = self

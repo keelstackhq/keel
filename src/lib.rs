@@ -74,6 +74,8 @@ pub fn run_with(
             fix: "keel up --repo owner/name --template rust --pieces rust-cli:my-cli".into(),
         });
     }
+    let pins = pins::Pins::load(&dir)?;
+    let changed = manifest.default_template_ref(&pins) || changed;
     // `up` writes keel.toml before any other step; `plan` and `doctor` never write.
     if command == Mode::Up && (changed || !Manifest::exists(&dir)) {
         manifest.write(&dir)?;
@@ -82,7 +84,6 @@ pub fn run_with(
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(10);
-    let pins = pins::Pins::load(&dir)?;
     let mut cx = Ctx {
         runner,
         dir,
