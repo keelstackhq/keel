@@ -212,7 +212,7 @@ mod tests {
                 &["hoist", "--json", "apply"],
                 Out::ok(r#"{"ok":true,"items":[]}"#),
             )
-            .on(&["hoist", "--json", "check"], Out::ok(r#"{"ok":true}"#));
+            .on(&["hoist", "--json", "check"], Out::ok(r#"{"items":[{"kind":"dns_record","key":"app.example.com A 1.2.3.4","action":"ok"}]}"#));
         run(&r, d.path(), m, true, true);
         let t = std::fs::read_to_string(d.path().join("hoist.toml")).unwrap();
         assert!(t.contains("zone = \"example.co.uk\""), "{t}");
@@ -323,7 +323,7 @@ mod tests {
                 &["hoist", "--json", "apply"],
                 Out::ok(r#"{"ok":true,"items":[]}"#),
             )
-            .on(&["hoist", "--json", "check"], Out::ok(r#"{"ok":true}"#));
+            .on(&["hoist", "--json", "check"], Out::ok(r#"{"items":[{"kind":"dns_record","key":"app.example.com A 1.2.3.4","action":"ok"}]}"#));
         assert!(matches!(
             run(&r, d.path(), cf_manifest(), true, true),
             Check::Done(_)
@@ -391,9 +391,9 @@ mod tests {
         assert!(matches!(chk(Out::ok(ok)), Check::Done(_)));
         let drift = r#"{"items":[{"kind":"dns_record","key":"app.example.com A 1.2.3.4","action":"create"}]}"#;
         assert!(matches!(chk(Out::with(1, drift, "")), Check::Todo(_)));
-        // Drift in another kind (r2) is the backup step's, not dns'.
+        // Items of another kind (r2) are the backup step's: dns has none of its own, so it is not done.
         let r2 = r#"{"items":[{"kind":"r2_bucket","key":"b","action":"create"}]}"#;
-        assert!(matches!(chk(Out::with(1, r2, "")), Check::Done(_)));
+        assert!(matches!(chk(Out::with(1, r2, "")), Check::Todo(_)));
         let human = r#"{"items":[],"human_steps":[{"id":"dns:app.example.com A","title":"Add the A record","url":"https://dash.cloudflare.com"}]}"#;
         let Check::Human(h) = chk(Out::with(2, human, "")) else {
             panic!()

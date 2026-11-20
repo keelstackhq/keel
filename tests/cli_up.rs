@@ -53,6 +53,7 @@ case "$name $*" in
   "gh run list"*) echo '[{"status":"completed","conclusion":"success","url":"https://github.com/owner/name/actions/runs/1"}]';;
   curl*) printf 200;;
   "hoist --version") echo "hoist 0.5.1";;
+  "hoist --json check --area cloudflare"*) echo '{"ok":true,"exit_code":0,"items":[{"kind":"dns_record","key":"k","action":"ok"},{"kind":"r2_bucket","key":"b","action":"ok"},{"kind":"r2_lifecycle","key":"l","action":"ok"},{"kind":"r2_token","key":"t","action":"ok"}],"human_steps":[]}';;
   "hoist --json "*) echo '{"ok":true,"exit_code":0,"items":[],"human_steps":[]}';;
   "berth --version") echo "berth 0.2.1";;
 esac

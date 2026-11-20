@@ -123,9 +123,10 @@ fn in_drift(item: &Value) -> bool {
     item["action"].as_str() != Some("ok")
 }
 
-/// `hoist --json check --area cloudflare`, read for one [`Slice`]: exit 0 is done; exit 1 is
-/// drift only when an item of the slice's kinds is in drift (see [`in_drift`]), else done; exit 2
-/// is `human_steps[0]` (never done). A hoist that rejects `--area` is `Upgrade`.
+/// `hoist --json check --area cloudflare`, read for one [`Slice`]: exit 0 or 1 is done only when
+/// at least one item of the slice's kinds exists and every such item is done (see [`in_drift`]);
+/// no such item, or one that is not "ok", is drift. Exit 2 is `human_steps[0]` (never done). A
+/// hoist that rejects `--area` is `Upgrade`.
 pub fn check_cloudflare(r: &dyn Runner, dir: &Path, s: &Slice) -> Res {
     let c = cmd(&["--json", "check"], area_args(&[CLOUDFLARE]), dir);
     let o = r.run(&c);
@@ -133,19 +134,23 @@ pub fn check_cloudflare(r: &dyn Runner, dir: &Path, s: &Slice) -> Res {
         return Res::Upgrade;
     }
     match o.code {
-        0 => match envelope(&c, &o) {
-            Ok(_) => Res::Ok,
+        0 | 1 => match envelope(&c, &o) {
             Err(e) => Res::Failed(e),
-        },
-        1 | 2 => match envelope(&c, &o) {
-            Err(e) => Res::Failed(e),
-            Ok(v) if o.code == 1 => {
-                let drift = v["items"].as_array().is_some_and(|a| {
+            Ok(v) => {
+                let mine: Vec<&Value> = v["items"].as_array().map_or_else(Vec::new, |a| {
                     a.iter()
-                        .any(|i| s.kinds.contains(&i["kind"].as_str().unwrap_or("")) && in_drift(i))
+                        .filter(|i| s.kinds.contains(&i["kind"].as_str().unwrap_or("")))
+                        .collect()
                 });
-                if drift { Res::Drift } else { Res::Ok }
+                if !mine.is_empty() && !mine.iter().any(|i| in_drift(i)) {
+                    Res::Ok
+                } else {
+                    Res::Drift
+                }
             }
+        },
+        2 => match envelope(&c, &o) {
+            Err(e) => Res::Failed(e),
             Ok(v) => human_res(&v, &v["human_steps"][0], &c),
         },
         _ => Res::Failed(failure(&c, &o)),
@@ -324,7 +329,17 @@ mod tests {
             assert_eq!(lines(&r), ["hoist --json check --area cloudflare"]);
             res
         };
-        assert!(matches!(chk(Out::ok(r#"{"items":[]}"#), &DNS), Res::Ok));
+        // Done needs at least one item of the slice's kinds, all with action "ok".
+        assert!(matches!(chk(Out::ok(r#"{"items":[]}"#), &DNS), Res::Drift));
+        assert!(matches!(chk(Out::ok(r#"{"ok":true}"#), &R2), Res::Drift));
+        let ok = r#"{"items":[{"kind":"dns_record","key":"k","action":"ok"}]}"#;
+        assert!(matches!(chk(Out::ok(ok), &DNS), Res::Ok));
+        assert!(matches!(chk(Out::ok(ok), &R2), Res::Drift));
+        let weird = r#"{"items":[{"kind":"dns_record","key":"k","action":"weird"}]}"#;
+        assert!(matches!(chk(Out::ok(weird), &DNS), Res::Drift));
+        assert!(matches!(chk(Out::with(1, weird, ""), &DNS), Res::Drift));
+        let mixed = r#"{"items":[{"kind":"dns_record","key":"a","action":"ok"},{"kind":"dns_record","key":"b","action":"weird"}]}"#;
+        assert!(matches!(chk(Out::ok(mixed), &DNS), Res::Drift));
         let drift = r#"{"items":[{"kind":"r2_bucket","key":"b","action":"create"},{"kind":"dns_record","key":"h A 1.2.3.4","action":"ok"}]}"#;
         assert!(matches!(chk(Out::with(1, drift, ""), &DNS), Res::Ok));
         assert!(matches!(chk(Out::with(1, drift, ""), &R2), Res::Drift));

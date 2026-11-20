@@ -225,7 +225,7 @@ mod tests {
                 &["hoist", "--json", "apply"],
                 Out::ok(r#"{"ok":true,"items":[]}"#),
             )
-            .on(&["hoist", "--json", "check"], Out::ok(r#"{"ok":true}"#));
+            .on(&["hoist", "--json", "check"], Out::ok(r#"{"items":[{"kind":"r2_bucket","key":"b","action":"ok"},{"kind":"r2_lifecycle","key":"l","action":"ok"},{"kind":"r2_token","key":"t","action":"ok"}]}"#));
         assert!(matches!(
             run(&r, d.path(), with_backup(Provider::R2), true, true),
             Check::Done(_)
@@ -304,7 +304,7 @@ mod tests {
             "[cloudflare]\naccount_id = \"x\"\n",
         )
         .unwrap();
-        let r = FakeRunner::new().on(&["hoist"], Out::ok(r#"{"ok":true,"items":[]}"#));
+        let r = FakeRunner::new().on(&["hoist"], Out::ok(r#"{"items":[{"kind":"r2_bucket","key":"b","action":"ok"},{"kind":"r2_lifecycle","key":"l","action":"ok"},{"kind":"r2_token","key":"t","action":"ok"}]}"#));
         assert!(matches!(run(&r, d.path(), m2, true, true), Check::Done(_)));
     }
 
@@ -358,7 +358,7 @@ mod tests {
             run(&r, d.path(), with_backup(Provider::R2), true, false)
         };
         let dns = r#"{"items":[{"kind":"dns_record","key":"k","action":"create"}]}"#;
-        assert!(matches!(chk(Out::with(1, dns, "")), Check::Done(_)));
+        assert!(matches!(chk(Out::with(1, dns, "")), Check::Todo(_)));
         let human =
             r#"{"items":[],"human_steps":[{"id":"r2:x","title":"Make a token","url":"u"}]}"#;
         let Check::Human(h) = chk(Out::with(2, human, "")) else {
