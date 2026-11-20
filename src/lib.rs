@@ -1,8 +1,14 @@
 #![forbid(unsafe_code)]
 
 pub mod cli;
+pub mod ctx;
+pub mod engine;
 pub mod error;
+pub mod exec;
+pub mod manifest;
+pub mod pins;
 pub mod report;
+pub mod step;
 
 pub use cli::{Cli, Command};
 pub use error::KeelError;
