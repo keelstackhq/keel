@@ -45,23 +45,14 @@ impl Step for Render {
 
         if !lock_before {
             // Validate piece names before touching the checkout.
-            match splice::pieces(r, &cx.dir, &src) {
-                splice::Pieces::Ids(ids) => {
-                    let bad: Vec<&str> = cx
-                        .manifest
-                        .pieces
-                        .iter()
-                        .map(|p| p.split(':').next().unwrap_or(p))
-                        .filter(|id| !ids.iter().any(|i| i == id))
-                        .collect();
-                    if !bad.is_empty() {
-                        return Ok(Check::Failed(format!(
-                            "unknown piece {} in {src}; valid ids: {}",
-                            bad.join(", "),
-                            ids.join(", ")
-                        )));
+            match splice::pieces(r, &cx.dir, &src, &git_ref) {
+                splice::Pieces::List(list) => {
+                    let problems = splice::check_pieces(&cx.manifest.pieces, &list);
+                    if !problems.is_empty() {
+                        return Ok(Check::Failed(format!("{src}: {}", problems.join("; "))));
                     }
                 }
+                splice::Pieces::Failed(e) => return Ok(Check::Failed(e)),
                 splice::Pieces::Unavailable(w) => eprintln!("keel: warning: {w}"),
             }
         }
@@ -154,7 +145,7 @@ mod tests {
             .on(&["git", "checkout", "-b", "keel/bootstrap"], Out::ok(""))
             .on(
                 &["splice", "--json", "pieces"],
-                Out::ok(r#"{"ok":true,"pieces":[{"id":"rust-cli"},{"id":"docs"}]}"#),
+                Out::ok(r#"{"ok":true,"command":"pieces","pieces":[{"id":"rust-cli","multiple":true,"default_name":null},{"id":"docs"}]}"#),
             )
             .on(
                 &["splice", "--json", "--yes", "new"],
@@ -307,7 +298,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let r = fake().on(
             &["splice", "--json", "pieces"],
-            Out::ok(r#"{"ok":true,"pieces":[{"id":"docs"},{"id":"web"}]}"#),
+            Out::ok(r#"{"ok":true,"command":"pieces","pieces":[{"id":"docs"},{"id":"web"}]}"#),
         );
         let Check::Failed(m) = apply(&r, d.path(), "rust") else {
             panic!()

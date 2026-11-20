@@ -14,36 +14,91 @@ pub fn source(template: &str) -> &str {
     }
 }
 
-pub enum Pieces {
-    Ids(Vec<String>),
-    /// Old splice (exit 2) or unusable output: render without validating.
-    Unavailable(String),
+pub struct PieceInfo {
+    pub id: String,
+    pub multiple: bool,
+    pub default_name: Option<String>,
 }
 
-/// `splice --json pieces <source>`; assumed `{pieces:[{id,..}]}` (spec §10).
-pub fn pieces(r: &dyn Runner, dir: &Path, source: &str) -> Pieces {
-    let c = Cmd::new("splice", &["--json", "pieces", source]).dir(dir);
+pub enum Pieces {
+    List(Vec<PieceInfo>),
+    /// Old splice (no `pieces` command): render without validating.
+    Unavailable(String),
+    /// splice answered with an error (bad source or ref, template error).
+    Failed(String),
+}
+
+/// `splice --json pieces <source> --ref <ref>` (splice#54): one object with
+/// `pieces:[{id, description, base, multiple, default_name, requires, vars}]`.
+/// Exit 2 is a bad source or usage on a splice that has the command; an older splice exits 2
+/// without a `pieces` JSON object, which keel treats as the command being absent.
+pub fn pieces(r: &dyn Runner, dir: &Path, source: &str, git_ref: &str) -> Pieces {
+    let c = Cmd::new("splice", &["--json", "pieces", source, "--ref", git_ref]).dir(dir);
     let o = r.run(&c);
-    if o.code == 2 || not_found(&o) {
+    if not_found(&o) {
+        return Pieces::Unavailable(
+            "splice is not installed; piece names were not validated".into(),
+        );
+    }
+    let v = json(&o);
+    let answered = v
+        .as_ref()
+        .is_some_and(|v| v["command"].as_str() == Some("pieces"));
+    if o.code == 2 && !answered {
         return Pieces::Unavailable(
             "this splice has no `pieces` command; piece names were not validated (upgrade splice)"
                 .into(),
         );
     }
-    let ids = json(&o).and_then(|v| {
+    let list = v.as_ref().and_then(|v| {
         v["pieces"].as_array().map(|a| {
             a.iter()
-                .filter_map(|p| p["id"].as_str().map(str::to_string))
+                .filter_map(|p| {
+                    Some(PieceInfo {
+                        id: p["id"].as_str()?.to_string(),
+                        multiple: p["multiple"].as_bool().unwrap_or(false),
+                        default_name: p["default_name"].as_str().map(str::to_string),
+                    })
+                })
                 .collect()
         })
     });
-    match (o.code, ids) {
-        (0, Some(ids)) => Pieces::Ids(ids),
+    match (o.code, list) {
+        (0, Some(list)) => Pieces::List(list),
+        _ if answered || o.code == 3 => Pieces::Failed(failure(&c, &o)),
         _ => Pieces::Unavailable(format!(
             "piece names were not validated: {}",
             failure(&c, &o)
         )),
     }
+}
+
+/// Problems with the manifest's `ID[:NAME]` entries against splice's piece list: unknown ids,
+/// and a `multiple` piece with no `default_name` given without a `:NAME`.
+pub fn check_pieces(wanted: &[String], list: &[PieceInfo]) -> Vec<String> {
+    let mut problems = Vec::new();
+    for w in wanted {
+        let (id, name) = match w.split_once(':') {
+            Some((i, n)) => (i, Some(n)),
+            None => (w.as_str(), None),
+        };
+        match list.iter().find(|p| p.id == id) {
+            None => problems.push(format!(
+                "unknown piece {id}; valid ids: {}",
+                list.iter()
+                    .map(|p| p.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+            Some(p) if p.multiple && p.default_name.is_none() && name.is_none_or(str::is_empty) => {
+                problems.push(format!(
+                    "piece {id} needs an instance name: pass --pieces {id}:NAME"
+                ))
+            }
+            Some(_) => {}
+        }
+    }
+    problems
 }
 
 /// `splice --json --yes new <source> . --ref <ref> --force --piece ID[:NAME]... [--data no_placeholder=true]`
@@ -90,6 +145,75 @@ pub fn render_files(out: &serde_json::Value) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn info(id: &str, multiple: bool, default_name: Option<&str>) -> PieceInfo {
+        PieceInfo {
+            id: id.into(),
+            multiple,
+            default_name: default_name.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn check_pieces_flags_unknown_ids_and_missing_instance_names() {
+        let list = [
+            info("rust-cli", true, None),
+            info("docs", false, None),
+            info("web", true, Some("web")),
+        ];
+        let ok: Vec<String> = ["rust-cli:my-cli", "docs", "web"].map(String::from).into();
+        assert!(check_pieces(&ok, &list).is_empty());
+        let bad: Vec<String> = ["rust-cli", "nope"].map(String::from).into();
+        let p = check_pieces(&bad, &list);
+        assert_eq!(p.len(), 2, "{p:?}");
+        assert!(p[0].contains("rust-cli:NAME"), "{p:?}");
+        assert!(
+            p[1].contains("unknown piece nope") && p[1].contains("docs"),
+            "{p:?}"
+        );
+    }
+
+    #[test]
+    fn pieces_reads_the_splice_54_shape_and_passes_the_ref() {
+        use crate::exec::{FakeRunner, Out};
+        let r = FakeRunner::new().on(
+            &["splice", "--json", "pieces"],
+            Out::ok(
+                r#"{"ok":true,"command":"pieces","changes":[],"messages":[],"pieces":[{"id":"rust-cli","description":"d","base":false,"multiple":true,"default_name":null,"requires":["base"],"vars":[]}],"template":{"name":"hull-rust","version":null,"vars":[]}}"#,
+            ),
+        );
+        let Pieces::List(l) = pieces(&r, Path::new("."), "gh:a/b", "v1") else {
+            panic!()
+        };
+        assert_eq!(l[0].id, "rust-cli");
+        assert!(l[0].multiple && l[0].default_name.is_none());
+        assert_eq!(r.calls()[0].line(), "splice --json pieces gh:a/b --ref v1");
+    }
+
+    #[test]
+    fn pieces_exit_2_with_a_pieces_object_is_a_failure_not_an_old_splice() {
+        use crate::exec::{FakeRunner, Out};
+        let r = FakeRunner::new().on(
+            &["splice", "--json", "pieces"],
+            Out::with(
+                2,
+                r#"{"ok":false,"command":"pieces","messages":["bad source"]}"#,
+                "",
+            ),
+        );
+        assert!(matches!(
+            pieces(&r, Path::new("."), "gh:a/b", "v1"),
+            Pieces::Failed(_)
+        ));
+        let old = FakeRunner::new().on(
+            &["splice", "--json", "pieces"],
+            Out::with(2, "", "error: unrecognized subcommand 'pieces'"),
+        );
+        assert!(matches!(
+            pieces(&old, Path::new("."), "gh:a/b", "v1"),
+            Pieces::Unavailable(_)
+        ));
+    }
 
     #[test]
     fn new_passes_the_ref() {
