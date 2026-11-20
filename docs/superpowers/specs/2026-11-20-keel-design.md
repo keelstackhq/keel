@@ -106,7 +106,7 @@ every `check` only and marks work `would-run`; it stops after the first human ga
 |---|----|-------------------|-------|
 | 1 | `preflight` | `node --version` ≥ 24, `gh auth status`, `gh api user` (login), `git --version`; repo exists (`gh repo view`); `-C` is a git checkout whose `origin` is the repo; each tool's `--version` equals its pin | install each tool not at its pin (§6) |
 | 2 | `apps` | Claude and Renovate apps installed on the repo (`gh api user/installations`, then the installation's repositories when `repository_selection` is `selected`) | none: human gate; prints the install link and polls up to `--wait` |
-| 3 | `render` | `.splice/lock.toml` exists and `Cargo.lock` exists when `Cargo.toml` does | branch (§5.1); `splice pieces --json` validates piece names; `splice --json --yes new <source> . --piece …` (rust: `--data no_placeholder=true`); `cargo generate-lockfile` when needed; commit |
+| 3 | `render` | `.splice/lock.toml` exists and `Cargo.lock` exists when `Cargo.toml` does | branch (§5.1); commit `keel.toml` alone (splice refuses a dirty tree); `splice pieces --json` validates piece names; `splice --json --yes new <source> . --force --piece …` (rust: `--data no_placeholder=true`); `cargo generate-lockfile` when needed; commit |
 | 4 | `governance` | `.bosun/version` exists; with `plan`, `bosun plan import FILE --dry-run` reports nothing to create | `bosun init --owner <gh login> --branch <current> --no-pr` (+ `--stack rust` for the rust template); labels fallback (§10); then `bosun plan import FILE` |
 | 5 | `settings` | `hoist --json check` exits 0 | `hoist --json apply --yes`; hoist human steps become keel's human step |
 | 6 | `token` | `gh api repos/R/environments/ENV/secrets/NAME` succeeds | with `--token-stdin`: read stdin, `gh secret set NAME --env ENV --repo R` (value on stdin). Without: human gate with the PAT link (§7) |
@@ -149,7 +149,8 @@ Install of a tool not at its pin: in a temp dir `npm pack @keelstackhq/<tool>@<v
 `npm pack @keelstackhq/<tool>-<os>-<arch>@<v>`; the base64 sha512 of each tarball must equal its
 pin (mismatch: step failed, nothing installed); then
 `npm install -g --ignore-scripts --omit=optional <launcher.tgz> <platform.tgz>`. A platform with
-no pin is a human step naming the manual install.
+no sha512 pin (e.g. macOS, Windows) is a human step (id `preflight`) naming the manual
+`npm install -g @keelstackhq/<tool>@<version>` and saying keel could not verify it.
 
 ## 7. The PAT gate
 

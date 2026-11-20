@@ -66,6 +66,10 @@ impl Step for Render {
             if let Err(e) = git::ensure_branch(r, &cx.dir, &default, cx.manifest.branch_name()) {
                 return Ok(Check::Failed(e));
             }
+            // `splice new` refuses a dirty tree: commit keel.toml (only it) on the branch first.
+            if let Err(e) = git::commit_path(r, &cx.dir, "keel.toml", "keel: add keel.toml") {
+                return Ok(Check::Failed(e));
+            }
             let c = splice::new_cmd(&cx.dir, &src, &cx.manifest.pieces, tpl == "rust");
             let o = r.run(&c);
             if o.code != 0 {
@@ -117,7 +121,8 @@ mod tests {
                 Out::ok(r#"{"ok":true}"#),
             )
             .on(&["cargo", "generate-lockfile"], Out::ok(""))
-            .on(&["git", "add", "-A"], Out::ok(""))
+            .on(&["git", "status", "--porcelain"], Out::ok("?? keel.toml\n"))
+            .on(&["git", "add"], Out::ok(""))
             .on(&["git", "commit"], Out::ok(""))
     }
 
@@ -173,8 +178,11 @@ mod tests {
                 .position(|x| x == s)
                 .unwrap_or_else(|| panic!("{s} in {l:?}"))
         };
-        let new = "splice --json --yes new gh:keelstackhq/hull//template-rust . --piece rust-cli:my-cli --data no_placeholder=true";
-        assert!(pos("git checkout -b keel/bootstrap") < pos(new));
+        let new = "splice --json --yes new gh:keelstackhq/hull//template-rust . --force --piece rust-cli:my-cli --data no_placeholder=true";
+        let kc = "git commit -m keel: add keel.toml -- keel.toml";
+        assert!(pos("git checkout -b keel/bootstrap") < pos("git add -- keel.toml"));
+        assert!(pos("git add -- keel.toml") < pos(kc));
+        assert!(pos(kc) < pos(new));
         assert!(pos(new) < pos("git add -A"));
         assert!(pos("git add -A") < pos("git commit -m keel: render rust"));
         assert_eq!(
@@ -189,13 +197,26 @@ mod tests {
     }
 
     #[test]
+    fn clean_keel_toml_is_not_recommitted() {
+        let d = tempfile::tempdir().unwrap();
+        let r = fake().on(&["git", "status", "--porcelain"], Out::ok(""));
+        let _ = apply(&r, d.path(), "rust");
+        let l = lines(&r);
+        assert!(
+            !l.iter().any(|x| x.contains("keel: add keel.toml")),
+            "{l:?}"
+        );
+        assert!(l.iter().any(|x| x.starts_with("splice --json --yes new")));
+    }
+
+    #[test]
     fn ts_template_has_no_rust_data_flag() {
         let d = tempfile::tempdir().unwrap();
         let r = fake();
         let _ = apply(&r, d.path(), "ts");
         assert!(
             lines(&r).contains(
-                &"splice --json --yes new gh:keelstackhq/hull//template . --piece rust-cli:my-cli"
+                &"splice --json --yes new gh:keelstackhq/hull//template . --force --piece rust-cli:my-cli"
                     .to_string()
             )
         );

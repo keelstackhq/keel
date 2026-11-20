@@ -2,6 +2,7 @@ use super::repo;
 use crate::ctx::Ctx;
 use crate::error::KeelError;
 use crate::exec::{Cmd, Out};
+use crate::pins::platform_key;
 use crate::report::HumanStep;
 use crate::step::{Check, Step};
 use crate::tools::{gh, git, not_found, npm};
@@ -9,7 +10,7 @@ use crate::tools::{gh, git, not_found, npm};
 pub struct Preflight;
 
 /// The tools keel calls, with the binary to ask for `--version`.
-const TOOLS: [&str; 3] = ["splice", "bosun", "hoist"];
+const TOOLS: [&str; 4] = ["splice", "bosun", "hoist", "berth"];
 
 fn at_pin(out: &Out, version: &str) -> bool {
     out.code == 0 && out.stdout.contains(version)
@@ -128,13 +129,36 @@ impl Step for Preflight {
     }
 
     fn apply(&self, cx: &mut Ctx) -> Result<Check, KeelError> {
+        let key = platform_key();
+        let mut manual: Option<HumanStep> = None;
         for (tool, _) in Preflight::behind(cx) {
             let Some(pin) = cx.pins.tool(tool) else {
                 continue;
             };
+            // Pins exist for the version but not for this platform: keel cannot verify an
+            // install, so a human installs it (a version with no sha512 at all stays Failed).
+            if pin
+                .sha512
+                .as_ref()
+                .is_some_and(|s| !s.platform.contains_key(&key))
+            {
+                let v = &pin.version;
+                manual.get_or_insert(HumanStep {
+                    id: self.id().into(),
+                    title: format!(
+                        "Install {tool} {v} by hand: keel has no pinned checksum for {key} and could not verify it"
+                    ),
+                    url: String::new(),
+                    command: format!("npm install -g @keelstackhq/{tool}@{v}"),
+                });
+                continue;
+            }
             if let Err(e) = npm::install_pinned(cx.runner, tool, &pin) {
                 return Ok(Check::Failed(e));
             }
+        }
+        if let Some(h) = manual {
+            return Ok(Check::Human(h));
         }
         self.check(cx)
     }
@@ -146,7 +170,6 @@ mod tests {
     use super::*;
     use crate::ctx::Opts;
     use crate::exec::FakeRunner;
-    use crate::pins::platform_key;
     use std::path::PathBuf;
 
     fn healthy() -> FakeRunner {
@@ -170,6 +193,7 @@ mod tests {
             .on(&["splice", "--version"], Out::ok("splice 0.6.0\n"))
             .on(&["bosun", "--version"], Out::ok("bosun 0.21.0\n"))
             .on(&["hoist", "--version"], Out::ok("hoist 0.5.1\n"))
+            .on(&["berth", "--version"], Out::ok("berth 0.2.1\n"))
     }
 
     fn run_check(r: &FakeRunner, pins: &str) -> Check {
@@ -321,6 +345,39 @@ mod tests {
                 .iter()
                 .any(|c| c.program == "npm" && c.args[0] == "install")
         );
+    }
+
+    #[test]
+    fn berth_behind_is_todo() {
+        let r = healthy().on(&["berth", "--version"], Out::ok("berth 0.1.0\n"));
+        let Check::Todo(m) = run_check(&r, PINS) else {
+            panic!()
+        };
+        assert!(m.contains("berth 0.2.1 (found berth 0.1.0)"), "{m}");
+    }
+
+    #[test]
+    fn platform_without_pin_is_a_human_step_and_installs_nothing() {
+        let r = healthy().on(&["splice", "--version"], Out::ok("splice 0.5.0\n"));
+        let pins = format!(
+            "{PINS}\n[sha512.splice]\nversion = \"0.6.0\"\nlauncher = \"x\"\nplan9_mips = \"y\"\n"
+        );
+        let mut cx = ctx(
+            &r,
+            PathBuf::from("."),
+            manifest("rust"),
+            &pins,
+            Opts::default(),
+            &no_sleep,
+            &no_stdin,
+        );
+        let Check::Human(h) = Preflight.apply(&mut cx).unwrap() else {
+            panic!()
+        };
+        assert_eq!(h.id, "preflight");
+        assert_eq!(h.command, "npm install -g @keelstackhq/splice@0.6.0");
+        assert!(h.title.contains("could not verify"), "{}", h.title);
+        assert!(!r.calls().iter().any(|c| c.program == "npm"));
     }
 
     #[test]

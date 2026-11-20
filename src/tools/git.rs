@@ -80,6 +80,30 @@ pub fn ensure_branch(
     Ok(branch.to_string())
 }
 
+/// Commit only `path` when it has uncommitted changes (or is untracked); other staged or
+/// modified files are left alone.
+pub fn commit_path(r: &dyn Runner, dir: &Path, path: &str, message: &str) -> Result<(), String> {
+    let st = Cmd::new("git", &["status", "--porcelain", "--", path]).dir(dir);
+    let o = r.run(&st);
+    if o.code != 0 {
+        return Err(failure(&st, &o));
+    }
+    if o.stdout.trim().is_empty() {
+        return Ok(());
+    }
+    let add = Cmd::new("git", &["add", "--", path]).dir(dir);
+    let o = r.run(&add);
+    if o.code != 0 {
+        return Err(failure(&add, &o));
+    }
+    let c = Cmd::new("git", &["commit", "-m", message, "--", path]).dir(dir);
+    let o = r.run(&c);
+    if o.code != 0 {
+        return Err(failure(&c, &o));
+    }
+    Ok(())
+}
+
 /// `git add -A` then commit; "nothing to commit" is fine.
 pub fn commit_all(r: &dyn Runner, dir: &Path, message: &str) -> Result<(), String> {
     let add = Cmd::new("git", &["add", "-A"]).dir(dir);

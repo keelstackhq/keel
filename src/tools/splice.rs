@@ -46,9 +46,10 @@ pub fn pieces(r: &dyn Runner, dir: &Path, source: &str) -> Pieces {
     }
 }
 
-/// `splice --json --yes new <source> . --piece ID[:NAME]... [--data no_placeholder=true]`
+/// `splice --json --yes new <source> . --force --piece ID[:NAME]... [--data no_placeholder=true]`
+/// (`--force`: the checkout is never empty; keel commits `keel.toml` first so the tree is clean).
 pub fn new_cmd(dir: &Path, source: &str, pieces: &[String], rust: bool) -> Cmd {
-    let mut args: Vec<&str> = vec!["--json", "--yes", "new", source, "."];
+    let mut args: Vec<&str> = vec!["--json", "--yes", "new", source, ".", "--force"];
     for p in pieces {
         args.push("--piece");
         args.push(p);
