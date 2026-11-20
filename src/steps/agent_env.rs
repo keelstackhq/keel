@@ -9,6 +9,11 @@ pub struct AgentEnv;
 pub const FILE: &str = ".keel/cloud-setup.sh";
 const PRELUDE: &str = include_str!("../proxy_ca.sh");
 
+/// Single-quote a value for bash.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 impl Step for AgentEnv {
     fn id(&self) -> &'static str {
         "agent-env"
@@ -43,7 +48,15 @@ impl Step for AgentEnv {
             ));
         };
         let path = cx.dir.join(FILE);
-        let text = format!("{PRELUDE}\n{script}\n");
+        let name = cx
+            .manifest
+            .repo
+            .as_deref()
+            .and_then(|r| r.rsplit('/').next());
+        let text = format!(
+            "KEEL_REPO_DIR={}\n{PRELUDE}\n{script}\n",
+            shell_quote(name.unwrap_or(""))
+        );
         let wrote = path
             .parent()
             .map_or(Ok(()), std::fs::create_dir_all)
@@ -114,6 +127,7 @@ mod tests {
         let text = std::fs::read_to_string(d.path().join(FILE)).unwrap();
         assert!(text.contains("proxy-ca.sh") && text.ends_with("echo BOSUN_SNIPPET\n"));
         assert!(text.find("proxy-ca.sh") < text.find("BOSUN_SNIPPET"));
+        assert!(text.starts_with("KEEL_REPO_DIR='name'\n"), "{text}");
     }
 
     #[test]
@@ -160,15 +174,17 @@ mod tests {
         }
     }
 
-    /// Run the prelude in `dir` (with a repo hook that exits `hook_code`), then print the CA var.
-    fn run_prelude(hook_code: i32, path: &str) -> Option<(bool, String, bool)> {
+    /// The checkout is `<cwd>/repo`; the hook (when present) records where it ran.
+    fn run_prelude(hook_code: Option<i32>, path: &str) -> Option<(bool, String, bool)> {
         let d = tempfile::tempdir().unwrap();
-        std::fs::create_dir(d.path().join("scripts")).unwrap();
-        std::fs::write(
-            d.path().join("scripts/proxy-ca.sh"),
-            format!("exit {hook_code}\n"),
-        )
-        .unwrap();
+        std::fs::create_dir_all(d.path().join("repo/scripts")).unwrap();
+        if let Some(code) = hook_code {
+            std::fs::write(
+                d.path().join("repo/scripts/proxy-ca.sh"),
+                format!("pwd > ../hook-cwd\nexit {code}\n"),
+            )
+            .unwrap();
+        }
         let ca = d.path().join("ca.pem");
         std::fs::write(&ca, "x").unwrap();
         let prof = d.path().join("profile");
@@ -176,7 +192,7 @@ mod tests {
         let f = d.path().join("p.sh");
         std::fs::write(
             &f,
-            format!("{PRELUDE}\necho \"CA=${{GIT_SSL_CAINFO:-}}\"\n"),
+            format!("KEEL_REPO_DIR=repo\n{PRELUDE}\necho \"CA=${{GIT_SSL_CAINFO:-}}\"\necho \"PWD=$PWD\"\n"),
         )
         .unwrap();
         let o = std::process::Command::new("bash")
@@ -188,7 +204,10 @@ mod tests {
             .env("KEEL_PROFILE_DIR", &prof)
             .output()
             .ok()?;
-        let out = String::from_utf8_lossy(&o.stdout).to_string();
+        let mut out = String::from_utf8_lossy(&o.stdout).to_string();
+        if let Ok(h) = std::fs::read_to_string(d.path().join("hook-cwd")) {
+            out.push_str(&format!("HOOK={}", h.trim()));
+        }
         Some((
             o.status.success(),
             out,
@@ -198,17 +217,57 @@ mod tests {
 
     #[test]
     fn hook_success_exports_in_this_shell_and_skips_the_fallback_file() {
-        let Some((ok, out, wrote)) = run_prelude(0, &std::env::var("PATH").unwrap_or_default())
+        let Some((ok, out, wrote)) =
+            run_prelude(Some(0), &std::env::var("PATH").unwrap_or_default())
         else {
             return;
         };
         assert!(ok);
         assert!(out.contains("CA=/"), "{out}");
         assert!(!wrote);
+        assert!(
+            out.contains("HOOK=") && out.contains("/repo"),
+            "hook ran in the checkout: {out}"
+        );
+        let pwd = out.lines().find_map(|l| l.strip_prefix("PWD=")).unwrap();
+        assert!(!pwd.ends_with("/repo"), "cwd restored: {out}");
     }
 
     #[test]
-    fn hook_failure_falls_back_and_still_exits_zero() {
+    fn missing_hook_runs_the_fallback_and_missing_repo_dir_uses_the_cwd() {
+        let bin = tempfile::tempdir().unwrap();
+        let Some(b) = ["/usr/bin/bash", "/bin/bash"]
+            .iter()
+            .find(|p| std::path::Path::new(p).exists())
+        else {
+            return;
+        };
+        std::os::unix::fs::symlink(b, bin.path().join("bash")).unwrap();
+        let Some((ok, out, wrote)) = run_prelude(None, bin.path().to_str().unwrap()) else {
+            return;
+        };
+        assert!(ok && wrote && out.contains("CA=/"), "{out}");
+        // Repo dir absent: the prelude stays in the cwd (no hook there) and still succeeds.
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("p.sh");
+        std::fs::write(
+            &f,
+            format!("KEEL_REPO_DIR=nope\n{PRELUDE}\necho \"PWD=$PWD\"\n"),
+        )
+        .unwrap();
+        let Ok(o) = std::process::Command::new("bash")
+            .arg(&f)
+            .current_dir(d.path())
+            .env("KEEL_PROFILE_DIR", d.path())
+            .output()
+        else {
+            return;
+        };
+        assert!(o.status.success());
+    }
+
+    #[test]
+    fn hook_failure_does_not_run_the_fallback_and_still_exits_zero() {
         let bin = tempfile::tempdir().unwrap();
         let Ok(b) = ["/usr/bin/bash", "/bin/bash"]
             .iter()
@@ -218,12 +277,12 @@ mod tests {
             return;
         };
         std::os::unix::fs::symlink(b, bin.path().join("bash")).unwrap();
-        let Some((ok, out, wrote)) = run_prelude(1, bin.path().to_str().unwrap()) else {
+        let Some((ok, out, wrote)) = run_prelude(Some(1), bin.path().to_str().unwrap()) else {
             return;
         };
         assert!(ok, "never a non-zero exit");
         assert!(out.contains("CA=/"), "{out}");
-        assert!(wrote, "fallback runs when the hook fails");
+        assert!(!wrote, "fallback runs only when hull's script is absent");
     }
 
     #[test]

@@ -23,6 +23,8 @@ pub struct ToolPin {
 pub struct Pins {
     versions: BTreeMap<String, String>,
     sha: BTreeMap<String, (String, Sha512Set)>,
+    /// `[refs.<name>] tag, sha`: the commit a pinned git tag must point at.
+    refs: BTreeMap<String, (String, String)>,
 }
 
 fn pins_err(file: &str, message: impl Into<String>) -> KeelError {
@@ -86,7 +88,20 @@ impl Pins {
         let mut pins = Pins {
             versions: versions_of(base_name, &t)?,
             sha: BTreeMap::new(),
+            refs: BTreeMap::new(),
         };
+        if let Some(s) = t.get("refs").and_then(|v| v.as_table()) {
+            for (name, v) in s {
+                let get = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_string);
+                let (Some(tag), Some(sha)) = (get("tag"), get("sha")) else {
+                    return Err(pins_err(
+                        base_name,
+                        format!("[refs.{name}] needs `tag` and `sha`"),
+                    ));
+                };
+                pins.refs.insert(name.clone(), (tag, sha));
+            }
+        }
         if let Some(s) = t.get("sha512").and_then(|v| v.as_table()) {
             for (tool, v) in s {
                 let Some(tbl) = v.as_table() else { continue };
@@ -116,6 +131,14 @@ impl Pins {
     /// A `[pins]` version (repo `pins.toml` already applied), e.g. `hull`.
     pub fn version(&self, name: &str) -> Option<&str> {
         self.versions.get(name).map(String::as_str)
+    }
+
+    /// The commit pinned for git tag `tag` of `name` (e.g. `hull`), if that is the pinned tag.
+    pub fn ref_sha(&self, name: &str, tag: &str) -> Option<&str> {
+        self.refs
+            .get(name)
+            .filter(|(t, _)| t == tag)
+            .map(|(_, s)| s.as_str())
     }
 
     pub fn tool(&self, name: &str) -> Option<ToolPin> {
@@ -188,6 +211,17 @@ mod tests {
         assert!(Pins::from_texts("e", "[pins\n", None).is_err());
         assert!(Pins::from_texts("e", EMBEDDED, Some("[pins\n")).is_err());
         assert!(Pins::from_texts("e", "[sha512.x]\nversion=\"1\"\n", None).is_err());
+    }
+
+    #[test]
+    fn hull_ref_sha_is_pinned_for_the_pinned_tag_only() {
+        let p = Pins::from_texts("e", EMBEDDED, None).unwrap();
+        assert_eq!(
+            p.ref_sha("hull", "v0.13.0"),
+            Some("3f4a65fda568cdd20c76168ed156d25a28ba5630")
+        );
+        assert_eq!(p.ref_sha("hull", "v9"), None);
+        assert!(Pins::from_texts("e", "[refs.hull]\ntag=\"v1\"\n", None).is_err());
     }
 
     #[test]

@@ -52,7 +52,7 @@ keel [-C DIR] [--json] [-v] doctor
   default: without `template_ref` (flag or `keel.toml`) the render step fails and asks for one.
 - `--pieces` takes a comma list; each entry is a splice piece `ID` or `ID:NAME` (the instance name,
   e.g. `rust-cli:my-cli`).
-- `--template`: `rust` = `gh:keelstackhq/hull//template-rust`, `ts` = `gh:keelstackhq/hull//template`;
+- `--template` (required, flag or `keel.toml`; missing is a usage error, exit 2, with a fix): `rust` = `gh:keelstackhq/hull//template-rust`, `ts` = `gh:keelstackhq/hull//template`;
   anything else is passed to `splice new` as the source.
 - `--wait SECS` (default 300): how long a GitHub-App gate polls before it returns exit 5. `0` = check
   once. Poll interval: `KEEL_POLL_SECS` (default 10).
@@ -118,7 +118,7 @@ every `check` only and marks work `would-run`; it stops after the first human ga
 |---|----|-------------------|-------|
 | 1 | `preflight` | `node --version` ≥ 24, `gh auth status`, `gh api user` (login), `git --version`; repo exists (`gh repo view`; if not, a human step: request the repo from the provisioner, never `gh repo create`); `-C` is a git checkout whose `origin` is the repo; each tool's `--version` equals its pin | install each tool not at its pin (§6) |
 | 2 | `apps` | Claude and Renovate apps installed on the repo (`gh api user/installations`, then the installation's repositories when `repository_selection` is `selected`) | none: human gate; prints the install link and polls up to `--wait` |
-| 3 | `render` | `.splice/lock.toml` exists and `Cargo.lock` exists when `Cargo.toml` does | branch (§5.1, switched before any commit); commit `keel.toml` alone (splice refuses a dirty tree); `splice --json pieces <source> --ref <template_ref>` validates piece names (unknown id, or a `multiple` piece with no `default_name` given without `:NAME`, fails before any write; an old splice without the command only warns); `splice --json --yes new <source> . --ref <template_ref> --force --piece …` (rust: `--data no_placeholder=true`); `cargo generate-lockfile` when needed; ensure `.keel/` is in `.gitignore`; commit only the render's files (`changes[].path` of the `splice new --json` output whose action is not `skip`, plus `.splice/lock.toml`) and what keel itself wrote (`.gitignore`, `Cargo.lock`); a lockfile-only re-run commits just `Cargo.lock` |
+| 3 | `render` | `.splice/lock.toml` exists and `Cargo.lock` exists when `Cargo.toml` does | branch (§5.1, switched before any commit); commit `keel.toml` alone (splice refuses a dirty tree); `splice --json pieces <source> --ref <template_ref>` validates piece names (unknown id, or a `multiple` piece with no `default_name` given without `:NAME`, fails before any write; an old splice without the command only warns; malformed or missing JSON, exit 1 or 3 fail); for a hull source `git ls-remote https://github.com/keelstackhq/hull refs/tags/<ref> refs/tags/<ref>^{}` must give (peeled, else plain) the sha pinned in `[refs.hull]` (§6), else failed ("hull tag <ref> moved: expected …, got …"; an unpinned ref or a failing ls-remote also fail); `splice --json --yes new <source> . --ref <template_ref> --force --piece …` (rust: `--data no_placeholder=true`); `cargo generate-lockfile` when needed; ensure `.keel/` is in `.gitignore`; commit only the render's files (`changes[].path` of the `splice new --json` output whose action is not `skip`, plus `.splice/lock.toml`) and what keel itself wrote (`.gitignore`, `Cargo.lock`); a lockfile-only re-run commits just `Cargo.lock`. Right after `splice new` the file list is saved to `.keel/render-files`; if the lock exists but the render was never committed (crash in between), the next run commits that list (re-filtered) plus `.splice/lock.toml` via explicit paths and removes the list; with no list it commits only the lock and fails telling the user to commit the files `git status` shows |
 | 4 | `governance` | `.bosun/version` exists; with `plan`, `bosun plan import FILE --dry-run` has no `data.epics[]`/`data.tasks[]` item with `action: "would-create"` | `bosun init --owner <gh login> --branch <work branch> --no-pr` (+ `--stack rust` for the rust template); labels fallback (§10); then `bosun plan import FILE` |
 | 5 | `settings` | `hoist --json check` exits 0 | `hoist --json apply --yes`; hoist human steps become keel's human step |
 | 6 | `token` | `gh api repos/R/environments/ENV/secrets/NAME` succeeds | with `--token-stdin`: read stdin, `gh secret set NAME --env ENV --repo R` (value on stdin). Without: human gate with the PAT link (§7) |
@@ -140,7 +140,7 @@ tags, releases, publishes or force-pushes.
 
 ### 5.2 Tool exit codes
 
-- splice: 0 ok, 1 conflict/drift → step failed, 2 usage (old splice: feature missing), 3 error.
+- splice: 0 ok, 1 conflict/drift → step failed, 2 usage (old splice: feature missing), 3 error. For `pieces`, only exit 2 without a `command:"pieces"` JSON object (or a missing binary) means the command is absent; anything else that is not a valid piece list is a failure.
 - bosun: 0 ok, 1 error, 2 usage (feature missing), 3 conflict, 4 halted, 5 needs-human → human
   step from `error.fix` / `next`, 6 limit. JSON `{version, command, ok, exit_code, data, error, next}`.
 - hoist: 0 ok, 1 drift/failed, 2 human steps (`human_steps[0]` becomes keel's), 3 error.
@@ -161,7 +161,7 @@ one `[pins]` table of exact string versions (`rust`, `nextest`, `cargo_deny`, `s
 same `[pins]` table for `splice`, `bosun`, `hoist`, `berth` and `hull` (the template tag, `v0.13.0` =
 commit `3f4a65fda568cdd20c76168ed156d25a28ba5630`, which has `template-rust/` and `template/`), plus `[sha512.<tool>]` tables
 (`version`, `launcher`, `linux_x64`, `linux_arm64`, …: npm `dist.integrity`, base64).
-`KEEL_PINS=FILE` replaces the embedded file. The repo's `pins.toml` `[pins]` versions override the
+`[refs.hull] tag, sha` records the commit that tag must peel to; keel checks it with `git ls-remote` before rendering a hull source (a tag with no pinned sha, e.g. a repo `pins.toml` moving `hull`, fails with a fix naming `KEEL_PINS` or updating keel). `KEEL_PINS=FILE` replaces the embedded file. The repo's `pins.toml` `[pins]` versions override the
 embedded ones (other tables and keys are ignored). A version with no recorded sha512 (repo pins a
 version keel has no sha512s for) is a failed step: update keel or point `KEEL_PINS` at a file
 with that version's sha512s. keel never installs an unverified tool.
@@ -183,11 +183,13 @@ Command: `keel up --token-stdin` (paste, then Enter). keel stores it with
 through hoist; this one environment secret is the exception, set by `gh secret set` (stdin) because
 the PAT must never reach hoist's argv, files or logs.
 
+The owner decided to keep this PAT step as a D-014 exception and the one human gate for
+credentials, until the splice bot uses the provisioner app's token; then this step goes away.
+
 ## 8. Agent environment
 
 `.keel/cloud-setup.sh` = a proxy-CA prelude + the `data.script` of `bosun setup-snippet`. The
-prelude runs only `./scripts/proxy-ca.sh install` at the repo root, the setup script's working
-directory (hull#132's hook; no other checkout is searched). When the hook is missing or fails and
+prelude starts with `KEEL_REPO_DIR='<name>'` (the repo name of `owner/name`); the setup script starts in the parent of the checkouts, so the prelude `cd`s into that directory (cwd if absent), runs only `./scripts/proxy-ca.sh install` there (hull#132's hook; no other checkout is searched) and restores the cwd; it never exits non-zero. Only when the hook is absent (not when it failed) and
 `$PROXY_CA_BUNDLE` or `/root/.ccr/ca-bundle.crt` exists (nothing else is trusted, not
 `SSL_CERT_FILE`), it writes
 `/etc/profile.d/keel-proxy-ca.sh` exporting `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`,

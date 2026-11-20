@@ -84,6 +84,8 @@ Pass the token with `keel up --token-stdin` (paste, then Enter). keel gives it t
 `gh secret set` (the one environment secret keel sets; repo secrets go through hoist) on stdin only. It never appears in argv, files, logs, stdout, stderr or JSON, and
 it is zeroized after use. keel has no HTTP client; `gh` talks to GitHub.
 
+This PAT step is a deliberate D-014 exception and the one human gate for credentials; it goes away once the splice bot uses the provisioner app's token.
+
 ## License
 
 MIT, see [LICENSE](LICENSE).

@@ -29,6 +29,7 @@ case "$name $*" in
   "gh pr view"*)
     st=OPEN; [ "$KEEL_SCENARIO" = done ] && st=MERGED
     echo '{"number":7,"url":"https://github.com/owner/name/pull/7","state":"'$st'","headRefOid":"abc123"}';;
+  "git ls-remote"*) printf '3f4a65fda568cdd20c76168ed156d25a28ba5630\trefs/tags/v0.13.0\n';;
   "splice --version") echo "splice 0.6.0";;
   "splice --json pieces"*) echo "error: unrecognized subcommand 'pieces'" >&2; exit 2;;
   "splice --json --yes new"*) echo '{"ok":true}';;
@@ -264,6 +265,17 @@ fn missing_repo_is_a_usage_error_with_fix() {
             .unwrap()
             .starts_with("keel up --repo owner/name")
     );
+    assert!(!env.repo.join("keel.toml").exists());
+}
+
+#[test]
+fn missing_template_is_a_usage_error_with_fix() {
+    let env = Env::new();
+    let args = ["--json", "up", "--repo", "owner/name"].map(String::from);
+    let (code, out, _) = run(&env, "plan", &args, "");
+    assert_eq!(code, 2);
+    let v = one_json(&out);
+    assert!(v["error"]["fix"].as_str().unwrap().contains("--template"));
     assert!(!env.repo.join("keel.toml").exists());
 }
 

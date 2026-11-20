@@ -74,6 +74,13 @@ pub fn run_with(
             fix: "keel up --repo owner/name --template rust --pieces rust-cli:my-cli".into(),
         });
     }
+    if manifest.template.is_none() && !doctor {
+        return Err(KeelError::Fix {
+            message: "no template: pass --template rust|ts|SOURCE or set `template` in keel.toml"
+                .into(),
+            fix: "keel up --template rust --pieces rust-cli:my-cli".into(),
+        });
+    }
     let pins = pins::Pins::load(&dir)?;
     let changed = manifest.default_template_ref(&pins) || changed;
     // `up` writes keel.toml before any other step; `plan` and `doctor` never write.

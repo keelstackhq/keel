@@ -30,8 +30,8 @@ pub enum Pieces {
 
 /// `splice --json pieces <source> --ref <ref>` (splice#54): one object with
 /// `pieces:[{id, description, base, multiple, default_name, requires, vars}]`.
-/// Exit 2 is a bad source or usage on a splice that has the command; an older splice exits 2
-/// without a `pieces` JSON object, which keel treats as the command being absent.
+/// Malformed or missing JSON with exit 0/1, and exit 3, are failures (§5.2); only exit 2
+/// without a `command:"pieces"` object (an older splice) or a missing binary is Unavailable.
 pub fn pieces(r: &dyn Runner, dir: &Path, source: &str, git_ref: &str) -> Pieces {
     let c = Cmd::new("splice", &["--json", "pieces", source, "--ref", git_ref]).dir(dir);
     let o = r.run(&c);
@@ -44,6 +44,7 @@ pub fn pieces(r: &dyn Runner, dir: &Path, source: &str, git_ref: &str) -> Pieces
     let answered = v
         .as_ref()
         .is_some_and(|v| v["command"].as_str() == Some("pieces"));
+    // Only exit 2 without a `pieces` object is an old splice (no such command).
     if o.code == 2 && !answered {
         return Pieces::Unavailable(
             "this splice has no `pieces` command; piece names were not validated (upgrade splice)"
@@ -65,11 +66,7 @@ pub fn pieces(r: &dyn Runner, dir: &Path, source: &str, git_ref: &str) -> Pieces
     });
     match (o.code, list) {
         (0, Some(list)) => Pieces::List(list),
-        _ if answered || o.code == 3 => Pieces::Failed(failure(&c, &o)),
-        _ => Pieces::Unavailable(format!(
-            "piece names were not validated: {}",
-            failure(&c, &o)
-        )),
+        _ => Pieces::Failed(failure(&c, &o)),
     }
 }
 
@@ -117,29 +114,76 @@ pub fn new_cmd(dir: &Path, source: &str, git_ref: &str, pieces: &[String], rust:
     Cmd::new("splice", &args).dir(dir)
 }
 
-/// The files a render wrote: `changes[].path` whose action is not `skip`, plus
-/// `.splice/lock.toml`. Absolute paths, `..` and `.git/` entries are dropped.
-pub fn render_files(out: &serde_json::Value) -> Vec<String> {
-    let mut files: Vec<String> = out["changes"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|c| c["action"].as_str() != Some("skip"))
-        .filter_map(|c| c["path"].as_str())
-        .filter(|p| {
-            let path = Path::new(p);
-            path.is_relative()
-                && !p.is_empty()
-                && path.components().all(
-                    |c| matches!(c, std::path::Component::Normal(s) if s != ".git" && s != ".keel"),
-                )
-        })
-        .map(str::to_string)
-        .collect();
+/// A path keel may stage: relative, no `..`, nothing under `.git` or `.keel`.
+fn safe_path(p: &str) -> bool {
+    let path = Path::new(p);
+    path.is_relative()
+        && !p.is_empty()
+        && path
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(s) if s != ".git" && s != ".keel"))
+}
+
+/// Keep only safe paths, add `.splice/lock.toml`, sort and dedup.
+pub fn sanitize_files<I: IntoIterator<Item = String>>(paths: I) -> Vec<String> {
+    let mut files: Vec<String> = paths.into_iter().filter(|p| safe_path(p)).collect();
     files.push(".splice/lock.toml".into());
     files.sort();
     files.dedup();
     files
+}
+
+/// The files a render wrote: `changes[].path` whose action is not `skip`, plus
+/// `.splice/lock.toml`. Absolute paths, `..` and `.git/` entries are dropped.
+pub fn render_files(out: &serde_json::Value) -> Vec<String> {
+    sanitize_files(
+        out["changes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|c| c["action"].as_str() != Some("skip"))
+            .filter_map(|c| c["path"].as_str().map(str::to_string)),
+    )
+}
+
+pub const HULL_URL: &str = "https://github.com/keelstackhq/hull";
+
+/// For a hull source: the tag must still point at the pinned commit. `pinned` is the sha
+/// recorded for `git_ref` in the pins (None: the ref is not one keel knows).
+pub fn verify_hull_ref(
+    r: &dyn Runner,
+    dir: &Path,
+    git_ref: &str,
+    pinned: Option<&str>,
+) -> Result<(), String> {
+    let Some(pinned) = pinned else {
+        return Err(format!(
+            "hull ref {git_ref} has no pinned commit: point KEEL_PINS at a pins.toml with a [refs.hull] tag and sha for it, or update keel"
+        ));
+    };
+    let tag = format!("refs/tags/{git_ref}");
+    let peeled = format!("{tag}^{{}}");
+    let c = Cmd::new("git", &["ls-remote", HULL_URL, &tag, &peeled]).dir(dir);
+    let o = r.run(&c);
+    if o.code != 0 {
+        return Err(failure(&c, &o));
+    }
+    let find = |name: &str| {
+        o.stdout.lines().find_map(|l| {
+            let (sha, n) = l.split_once(char::is_whitespace)?;
+            (n.trim() == name).then(|| sha.trim().to_string())
+        })
+    };
+    let got = find(&peeled).or_else(|| find(&tag)).ok_or_else(|| {
+        format!("hull tag {git_ref} not found at {HULL_URL}: check the template_ref or network")
+    })?;
+    if got == pinned {
+        Ok(())
+    } else {
+        Err(format!(
+            "hull tag {git_ref} moved: expected {pinned}, got {got}"
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -216,6 +260,23 @@ mod tests {
     }
 
     #[test]
+    fn pieces_malformed_or_missing_json_and_exit_3_are_failures() {
+        use crate::exec::{FakeRunner, Out};
+        for out in [
+            Out::ok("not json"),
+            Out::ok(r#"{"ok":true}"#),
+            Out::with(1, "", "boom"),
+            Out::with(3, "", "env"),
+        ] {
+            let r = FakeRunner::new().on(&["splice", "--json", "pieces"], out);
+            assert!(matches!(
+                pieces(&r, Path::new("."), "gh:a/b", "v1"),
+                Pieces::Failed(_)
+            ));
+        }
+    }
+
+    #[test]
     fn new_passes_the_ref() {
         let c = new_cmd(Path::new("."), "gh:a/b", "v1", &["p:x".into()], true);
         assert_eq!(
@@ -239,6 +300,25 @@ mod tests {
             render_files(&serde_json::json!({"ok":true})),
             [".splice/lock.toml"]
         );
+    }
+
+    #[test]
+    fn hull_ref_must_match_the_pinned_sha() {
+        use crate::exec::{FakeRunner, Out};
+        let ls = |o: Out| FakeRunner::new().on(&["git", "ls-remote"], o);
+        let v = |r: &FakeRunner, pin: Option<&str>| verify_hull_ref(r, Path::new("."), "v1", pin);
+        let r = ls(Out::ok("aaa\trefs/tags/v1\nbbb\trefs/tags/v1^{}\n"));
+        assert!(v(&r, Some("bbb")).is_ok(), "peeled wins");
+        assert_eq!(
+            r.calls()[0].line(),
+            "git ls-remote https://github.com/keelstackhq/hull refs/tags/v1 refs/tags/v1^{}"
+        );
+        assert!(v(&ls(Out::ok("aaa\trefs/tags/v1\n")), Some("aaa")).is_ok());
+        let e = v(&r, Some("aaa")).unwrap_err();
+        assert_eq!(e, "hull tag v1 moved: expected aaa, got bbb");
+        assert!(v(&r, None).unwrap_err().contains("KEEL_PINS"));
+        assert!(v(&ls(Out::with(128, "", "no net")), Some("aaa")).is_err());
+        assert!(v(&ls(Out::ok("")), Some("aaa")).is_err());
     }
 
     #[test]

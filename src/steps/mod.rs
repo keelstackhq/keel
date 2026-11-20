@@ -91,8 +91,7 @@ pub(crate) mod testutil {
     use std::time::Duration;
     use zeroize::Zeroizing;
 
-    pub const PINS: &str =
-        "[pins]\nsplice = \"0.6.0\"\nbosun = \"0.21.0\"\nhoist = \"0.5.1\"\nberth = \"0.2.1\"\n";
+    pub const PINS: &str = "[pins]\nsplice = \"0.6.0\"\nbosun = \"0.21.0\"\nhoist = \"0.5.1\"\nberth = \"0.2.1\"\n\n[refs.hull]\ntag = \"v0.13.0\"\nsha = \"3f4a65fda568cdd20c76168ed156d25a28ba5630\"\n";
 
     pub fn manifest(template: &str) -> Manifest {
         Manifest {

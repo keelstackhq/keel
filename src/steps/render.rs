@@ -15,6 +15,49 @@ fn template(cx: &Ctx) -> Result<String, KeelError> {
     })
 }
 
+const LIST: &str = ".keel/render-files";
+
+fn save_render_files(dir: &std::path::Path, files: &[String]) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir.join(".keel"))?;
+    std::fs::write(dir.join(LIST), files.join("\n") + "\n")
+}
+
+/// The render ran but its commit did not (crash in between): commit the saved file list (and the
+/// lock file), never `add -A`. No list: commit just the lock and fail naming what is left.
+fn resume_uncommitted(cx: &Ctx, tpl: &str) -> Option<Check> {
+    let list_path = cx.dir.join(LIST);
+    match std::fs::read_to_string(&list_path) {
+        Ok(text) => {
+            let paths = splice::sanitize_files(text.lines().map(|l| l.trim().to_string()));
+            let msg = format!("keel: render {tpl}");
+            if let Err(e) = git::commit_paths(cx.runner, &cx.dir, &paths, &msg) {
+                return Some(Check::Failed(e));
+            }
+            let _ = std::fs::remove_file(&list_path);
+            None
+        }
+        Err(_) => {
+            let lock = [".splice/lock.toml".to_string()];
+            let st = Cmd::new("git", &["status", "--porcelain", "--", &lock[0]]).dir(&cx.dir);
+            let o = cx.runner.run(&st);
+            if o.code != 0 || o.stdout.trim().is_empty() {
+                return None;
+            }
+            if let Err(e) =
+                git::commit_paths(cx.runner, &cx.dir, &lock, &format!("keel: render {tpl}"))
+            {
+                return Some(Check::Failed(e));
+            }
+            let all = Cmd::new("git", &["status", "--porcelain"]).dir(&cx.dir);
+            let left = cx.runner.run(&all).stdout;
+            Some(Check::Failed(format!(
+                "a previous render left files uncommitted and keel lost the list (only .splice/lock.toml was committed); `git status` shows:\n{}\nfix: review them and commit the rendered files, then re-run keel up",
+                left.trim_end()
+            )))
+        }
+    }
+}
+
 impl Step for Render {
     fn id(&self) -> &'static str {
         "render"
@@ -44,6 +87,13 @@ impl Step for Render {
         let lock_before = cx.dir.join(".splice/lock.toml").is_file();
 
         if !lock_before {
+            // The template tag must still point at the commit keel pinned.
+            if src.starts_with("gh:keelstackhq/hull") {
+                let pinned = cx.pins.ref_sha("hull", &git_ref);
+                if let Err(e) = splice::verify_hull_ref(r, &cx.dir, &git_ref, pinned) {
+                    return Ok(Check::Failed(e));
+                }
+            }
             // Validate piece names before touching the checkout.
             match splice::pieces(r, &cx.dir, &src, &git_ref) {
                 splice::Pieces::List(list) => {
@@ -67,7 +117,11 @@ impl Step for Render {
         // The branch may already hold the render (a re-run from a fresh clone).
         let rendered = cx.dir.join(".splice/lock.toml").is_file();
         let mut render_files: Vec<String> = Vec::new();
-        if !rendered {
+        if rendered {
+            if let Some(failed) = resume_uncommitted(cx, &tpl) {
+                return Ok(failed);
+            }
+        } else {
             // `splice new` refuses a dirty tree: commit keel.toml (only it) on the branch first.
             if let Err(e) = git::commit_path(r, &cx.dir, "keel.toml", "keel: add keel.toml") {
                 return Ok(Check::Failed(e));
@@ -81,6 +135,10 @@ impl Step for Render {
             match tools::json(&o) {
                 Some(v) => render_files = splice::render_files(&v),
                 None => return Ok(Check::Failed(tools::not_json(&c))),
+            }
+            // Survive a crash between `splice new` and the commit (see `resume_uncommitted`).
+            if let Err(e) = save_render_files(&cx.dir, &render_files) {
+                return Ok(Check::Failed(format!("cannot write {LIST}: {e}")));
             }
         }
         let lockfile = cx.dir.join("Cargo.toml").is_file() && !cx.dir.join("Cargo.lock").is_file();
@@ -115,7 +173,11 @@ impl Step for Render {
             if ignored {
                 paths.push(".gitignore".into());
             }
-            git::commit_paths(r, &cx.dir, &paths, &format!("keel: render {tpl}"))
+            let res = git::commit_paths(r, &cx.dir, &paths, &format!("keel: render {tpl}"));
+            if res.is_ok() {
+                let _ = std::fs::remove_file(cx.dir.join(LIST));
+            }
+            res
         };
         if let Err(e) = committed {
             return Ok(Check::Failed(e));
@@ -143,6 +205,10 @@ mod tests {
             )
             .on(&["git", "rev-parse", "--verify"], Out::with(1, "", ""))
             .on(&["git", "checkout", "-b", "keel/bootstrap"], Out::ok(""))
+            .on(
+                &["git", "ls-remote"],
+                Out::ok("3f4a65fda568cdd20c76168ed156d25a28ba5630\trefs/tags/v0.13.0\n"),
+            )
             .on(
                 &["splice", "--json", "pieces"],
                 Out::ok(r#"{"ok":true,"command":"pieces","pieces":[{"id":"rust-cli","multiple":true,"default_name":null},{"id":"docs"}]}"#),
@@ -304,11 +370,9 @@ mod tests {
             panic!()
         };
         assert!(m.contains("rust-cli") && m.contains("docs, web"), "{m}");
-        assert!(
-            !lines(&r)
-                .iter()
-                .any(|l| l.starts_with("git") || l.contains(" new "))
-        );
+        assert!(!lines(&r).iter().any(|l| (l.starts_with("git")
+            && !l.starts_with("git ls-remote"))
+            || l.contains(" new ")));
     }
 
     #[test]
@@ -336,6 +400,108 @@ mod tests {
         assert!(lines(&r).is_empty(), "nothing runs before the ref is known");
     }
 
+    fn pinned(d: &std::path::Path, r: &FakeRunner, tag: &str) -> Check {
+        let mut m = manifest("rust");
+        m.template_ref = Some(tag.into());
+        let mut cx = ctx(
+            r,
+            d.to_path_buf(),
+            m,
+            PINS,
+            Opts::default(),
+            &no_sleep,
+            &no_stdin,
+        );
+        Render.apply(&mut cx).unwrap()
+    }
+
+    #[test]
+    fn moved_or_unpinned_hull_tag_fails_before_splice() {
+        let d = tempfile::tempdir().unwrap();
+        let r = fake().on(&["git", "ls-remote"], Out::ok("bad\trefs/tags/v0.13.0\n"));
+        let Check::Failed(m) = pinned(d.path(), &r, "v0.13.0") else {
+            panic!()
+        };
+        assert!(m.contains("moved") && m.contains("bad"), "{m}");
+        let r = fake();
+        let Check::Failed(m) = pinned(d.path(), &r, "v0.99.0") else {
+            panic!()
+        };
+        assert!(m.contains("KEEL_PINS"), "{m}");
+        let r = fake().on(&["git", "ls-remote"], Out::with(128, "", "no net"));
+        assert!(matches!(pinned(d.path(), &r, "v0.13.0"), Check::Failed(_)));
+        assert!(!lines(&r).iter().any(|l| l.contains(" new ")));
+    }
+
+    #[test]
+    fn render_file_list_is_saved_and_removed_after_the_commit() {
+        let d = tempfile::tempdir().unwrap();
+        let r = fake();
+        let _ = apply(&r, d.path(), "rust");
+        assert!(!d.path().join(LIST).exists());
+        // A failing commit leaves the list for the next run.
+        let d = tempfile::tempdir().unwrap();
+        let r = fake().on(
+            &["git", "commit", "-m", "keel: render rust"],
+            Out::with(1, "", "x"),
+        );
+        let _ = apply(&r, d.path(), "rust");
+        let t = std::fs::read_to_string(d.path().join(LIST)).unwrap();
+        assert_eq!(t, ".splice/lock.toml\nsrc/main.rs\n");
+    }
+
+    fn lock(d: &std::path::Path) {
+        std::fs::create_dir(d.join(".splice")).unwrap();
+        std::fs::write(d.join(".splice/lock.toml"), "").unwrap();
+    }
+
+    #[test]
+    fn resume_commits_the_saved_list_filtered_and_removes_it() {
+        let d = tempfile::tempdir().unwrap();
+        lock(d.path());
+        std::fs::create_dir(d.path().join(".keel")).unwrap();
+        std::fs::write(
+            d.path().join(LIST),
+            "src/main.rs\n../evil\n/etc/x\n.git/x\n",
+        )
+        .unwrap();
+        let r = fake();
+        let _ = apply(&r, d.path(), "rust");
+        let l = lines(&r);
+        assert!(
+            l.contains(
+                &"git commit -m keel: render rust -- .splice/lock.toml src/main.rs".to_string()
+            ),
+            "{l:?}"
+        );
+        assert!(
+            !l.iter().any(|x| x.contains("evil") || x.contains(" -A")),
+            "{l:?}"
+        );
+        assert!(!l.iter().any(|x| x.starts_with("splice")), "{l:?}");
+        assert!(!d.path().join(LIST).exists());
+    }
+
+    #[test]
+    fn resume_without_a_list_commits_only_the_lock_and_fails_with_a_fix() {
+        let d = tempfile::tempdir().unwrap();
+        lock(d.path());
+        let r = fake();
+        let Check::Failed(m) = apply(&r, d.path(), "rust") else {
+            panic!()
+        };
+        assert!(m.contains("git status") && m.contains("commit"), "{m}");
+        assert!(
+            lines(&r).contains(&"git commit -m keel: render rust -- .splice/lock.toml".to_string())
+        );
+        // Clean lock and no list: nothing to resume.
+        let d = tempfile::tempdir().unwrap();
+        lock(d.path());
+        let r = fake().on(&["git", "status", "--porcelain"], Out::ok(""));
+        let _ = apply(&r, d.path(), "rust");
+        assert!(!lines(&r).iter().any(|l| l.starts_with("git commit")));
+    }
+
     #[test]
     fn splice_conflict_fails() {
         let d = tempfile::tempdir().unwrap();
@@ -354,6 +520,8 @@ mod tests {
         std::fs::create_dir(d.path().join(".splice")).unwrap();
         std::fs::write(d.path().join(".splice/lock.toml"), "").unwrap();
         std::fs::write(d.path().join("Cargo.toml"), "").unwrap();
+        std::fs::create_dir(d.path().join(".keel")).unwrap();
+        std::fs::write(d.path().join(LIST), ".splice/lock.toml\n").unwrap();
         let r = fake();
         let _ = apply(&r, d.path(), "rust");
         let l = lines(&r);

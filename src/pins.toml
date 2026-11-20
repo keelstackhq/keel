@@ -10,6 +10,10 @@ berth = "0.2.1"
 # hull template tag (= commit 3f4a65fda568cdd20c76168ed156d25a28ba5630): keel renders `rust`/`ts` at it.
 hull = "v0.13.0"
 
+[refs.hull]
+tag = "v0.13.0"
+sha = "3f4a65fda568cdd20c76168ed156d25a28ba5630"
+
 [sha512.splice]
 version = "0.6.0"
 launcher = "dMLEVxDdl6qCCLZhCIb0qV+f5BZ1r5rRTglMtYf9cc4uRW81eWSSz1n5fuB1RlotWgMGbBbzSvyX1O7PxDHHSA=="
