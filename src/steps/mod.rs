@@ -4,15 +4,21 @@ use crate::error::KeelError;
 use crate::step::Step;
 
 pub mod apps;
+pub mod governance;
 pub mod preflight;
 pub mod render;
+pub mod settings;
+pub mod token;
 
-/// Steps 1-3; governance, settings and token follow, doctor and merge steps are added after them.
+/// Steps 1-6; the agent-env, doctor and merge steps are added after them.
 pub fn all_steps() -> Vec<Box<dyn Step>> {
     vec![
         Box::new(preflight::Preflight),
         Box::new(apps::Apps),
         Box::new(render::Render),
+        Box::new(governance::Governance),
+        Box::new(settings::Settings),
+        Box::new(token::Token),
     ]
 }
 
