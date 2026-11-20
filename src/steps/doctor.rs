@@ -106,10 +106,17 @@ impl Step for Doctor {
         }
         let open = gh::pr_view(r, &cx.dir, &repo, &branch).is_some_and(|p| p.state == "OPEN");
         if !open {
-            let c = gh::pr_create_cmd(&cx.dir, &repo, &branch, "keel: bootstrap", &body());
-            let o = r.run(&c);
-            if o.code != 0 {
-                return Ok(Check::Failed(failure(&c, &o)));
+            // bosun opens the PR (JSON); an old bosun without `pr --single` falls back to gh.
+            match bosun::pr(r, &cx.dir) {
+                bosun::Pr::Opened(_) => {}
+                bosun::Pr::Failed(e) => return Ok(Check::Failed(e)),
+                bosun::Pr::Unsupported => {
+                    let c = gh::pr_create_cmd(&cx.dir, &repo, &branch, "keel: bootstrap", &body());
+                    let o = r.run(&c);
+                    if o.code != 0 {
+                        return Ok(Check::Failed(failure(&c, &o)));
+                    }
+                }
             }
         }
         self.check(cx)
@@ -144,6 +151,37 @@ mod tests {
             .on(&["git", "commit"], Out::ok(""))
             .on(&["git", "push"], Out::ok(""))
             .on(&["gh", "pr", "create"], Out::ok("https://x/pull/7\n"))
+            .on(
+                &["bosun", "--json", "pr", "--single", "--ready"],
+                Out::ok(r#"{"ok":true,"data":{"pr":{"url":"https://x/pull/7","number":7}}}"#),
+            )
+    }
+
+    /// An old bosun: no `pr --single`.
+    fn old_bosun() -> FakeRunner {
+        fake().on(
+            &["bosun", "--json", "pr", "--single", "--ready"],
+            Out::with(2, "", "unrecognized subcommand 'pr'"),
+        )
+    }
+
+    #[test]
+    fn bosun_opens_the_pr_after_the_push_and_gh_is_not_used() {
+        let r = fake().on(&["gh", "pr", "view"], Out::with(1, "", "none"));
+        let _ = go(&r, true);
+        let l = lines(&r);
+        let pos = |p: &str| l.iter().position(|x| x.starts_with(p)).unwrap();
+        assert!(pos("git push") < pos("bosun --json pr --single --ready"));
+        assert!(!l.iter().any(|x| x.starts_with("gh pr create")), "{l:?}");
+        assert!(!l.iter().any(|x| x.contains("merge")), "{l:?}");
+        // A bosun failure other than exit 2 fails the step.
+        let r = fake()
+            .on(&["gh", "pr", "view"], Out::with(1, "", "none"))
+            .on(
+                &["bosun", "--json", "pr", "--single", "--ready"],
+                Out::with(3, "", "no commits"),
+            );
+        assert!(matches!(go(&r, true), Check::Failed(m) if m.contains("no commits")));
     }
 
     /// A checkout holding keel.toml (and nothing else keel owns).
@@ -242,7 +280,7 @@ mod tests {
     #[test]
     fn apply_commits_pushes_without_force_and_opens_the_pr() {
         // No PR before the push, a PR after the create.
-        let r = fake().on(&["gh", "pr", "view"], Out::with(1, "", "none"));
+        let r = old_bosun().on(&["gh", "pr", "view"], Out::with(1, "", "none"));
         let _ = go(&r, true);
         let l = lines(&r);
         let pos = |p: &str| {
