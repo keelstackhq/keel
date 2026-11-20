@@ -173,6 +173,13 @@ pub fn apply_cloudflare(r: &dyn Runner, dir: &Path, fly_app: &str) -> Res {
             Ok(v) => human_res(&v, &v["human_steps"][0], &c),
             Err(e) => Res::Failed(e),
         },
+        // Key delivery failed and so did the revoke: hoist adds a human step for it.
+        1 => match json(&o) {
+            Some(v) if v["human_steps"][0]["title"].is_string() => {
+                human_res(&v, &v["human_steps"][0], &c)
+            }
+            _ => Res::Failed(failure(&c, &o)),
+        },
         _ => apply_res(&c, &o),
     }
 }
@@ -393,6 +400,28 @@ mod tests {
         ));
         let h = r#"{"items":[],"human_steps":[{"id":"dns:app.example.com A","title":"Add A","url":""}]}"#;
         assert!(matches!(run(Out::with(2, h, "")), Res::Human { .. }));
+        // Key delivery failed (exit 1) and the revoke failed too: hoist's human step wins.
+        let rev = r#"{"ok":false,"items":[],"human_steps":[{"id":"cloudflare:revoke","title":"Revoke the R2 token by hand","url":"https://dash.cloudflare.com/"}]}"#;
+        match run(Out::with(1, rev, "")) {
+            Res::Human {
+                title,
+                url,
+                command,
+            } => assert_eq!(
+                (title.as_str(), url.as_str(), command.as_str()),
+                (
+                    "Revoke the R2 token by hand",
+                    "https://dash.cloudflare.com/",
+                    "keel up"
+                )
+            ),
+            _ => panic!(),
+        }
+        assert!(matches!(run(Out::with(1, "boom", "")), Res::Failed(_)));
+        assert!(matches!(
+            run(Out::with(1, r#"{"ok":false,"items":[]}"#, "")),
+            Res::Failed(_)
+        ));
     }
 
     #[test]
