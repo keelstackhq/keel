@@ -10,10 +10,11 @@ pub struct Backup;
 const SECTION: &str = "cloudflare.r2";
 
 /// `[cloudflare.r2]`: hoist makes the bucket and its lifecycle rule, and writes a scoped key
-/// straight to the fly app's secrets. The key never passes through keel.
+/// straight to the fly app's secrets, under the names the service's `s3-backup` feature reads
+/// (the hoist `env` mapping shape is assumed until relayed). The key never passes through keel.
 fn section_text(app: &str, days: u32) -> String {
     format!(
-        "[{SECTION}]\nbucket = \"{app}-backup\"\nlifecycle = {{ expire_days = {days} }}\nkey = {{ scope = \"object-rw\", sink = \"fly:{app}\" }}\n"
+        "[{SECTION}]\nbucket = \"{app}-backup\"\nlifecycle = {{ expire_days = {days} }}\nkey = {{ scope = \"object-rw\", sink = \"fly:{app}\", env = {{ endpoint = \"BACKUP_S3_ENDPOINT\", bucket = \"BACKUP_S3_BUCKET\", region = \"BACKUP_S3_REGION\", access_key_id = \"BACKUP_S3_ACCESS_KEY_ID\", secret_access_key = \"BACKUP_S3_SECRET_ACCESS_KEY\" }} }}\n"
     )
 }
 
@@ -180,7 +181,7 @@ mod tests {
         let t = std::fs::read_to_string(d.path().join("hoist.toml")).unwrap();
         assert_eq!(
             t,
-            "[cloudflare.r2]\nbucket = \"app-backup\"\nlifecycle = { expire_days = 14 }\nkey = { scope = \"object-rw\", sink = \"fly:app\" }\n"
+            "[cloudflare.r2]\nbucket = \"app-backup\"\nlifecycle = { expire_days = 14 }\nkey = { scope = \"object-rw\", sink = \"fly:app\", env = { endpoint = \"BACKUP_S3_ENDPOINT\", bucket = \"BACKUP_S3_BUCKET\", region = \"BACKUP_S3_REGION\", access_key_id = \"BACKUP_S3_ACCESS_KEY_ID\", secret_access_key = \"BACKUP_S3_SECRET_ACCESS_KEY\" } }\n"
         );
         assert_eq!(
             r.calls()[0].line(),

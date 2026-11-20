@@ -145,7 +145,14 @@ impl Step for Render {
                 return Ok(Check::Failed(e));
             }
             let rust = src == splice::RUST_SOURCE;
-            let c = splice::new_cmd(&cx.dir, &src, &git_ref, &cx.manifest.pieces, rust);
+            let c = splice::new_cmd(
+                &cx.dir,
+                &src,
+                &git_ref,
+                &cx.manifest.pieces,
+                rust,
+                cx.manifest.fly().map(|f| f.app.as_str()),
+            );
             let o = r.run(&c);
             if o.code != 0 {
                 return Ok(Check::Failed(tools::failure(&c, &o)));

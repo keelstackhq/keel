@@ -63,22 +63,41 @@ pub fn ips(r: &dyn Runner, dir: &Path, app: &str) -> Result<Ips, String> {
     parse_ips(&o.stdout).ok_or_else(|| super::not_json(&c))
 }
 
-pub fn setup_cmd(dir: &Path, args: &[&str]) -> Cmd {
-    Cmd::new(SETUP_SCRIPT, args).dir(dir)
+/// The one argv source: `--app A --region R --host H [--set-gh-secret ENV]`. Never `--deploy`:
+/// the first merge deploys.
+pub fn setup_args(app: &str, region: &str, host: &str, gh_secret_env: Option<&str>) -> Vec<String> {
+    let mut a: Vec<String> = ["--app", app, "--region", region, "--host", host]
+        .map(String::from)
+        .into();
+    if let Some(env) = gh_secret_env {
+        a.extend(["--set-gh-secret".into(), env.into()]);
+    }
+    a
 }
 
-/// `scripts/fly-setup.sh --app APP --region R --host H`: app, volume, secrets, IPs, certificate.
+/// The script's secrets go on stdin as `KEY=VALUE` lines; keel has none for it, so stdin is
+/// explicitly empty (never inherited).
+pub fn setup_cmd(dir: &Path, args: &[String]) -> Cmd {
+    let a: Vec<&str> = args.iter().map(String::as_str).collect();
+    Cmd::new(SETUP_SCRIPT, &a).dir(dir).stdin(vec![])
+}
+
+/// `scripts/fly-setup.sh --app A --region R --host H`: app, volume, secrets, IPs, certificate.
 pub fn setup(r: &dyn Runner, dir: &Path, app: &str, region: &str, host: &str) -> Out {
-    r.run(&setup_cmd(
-        dir,
-        &["--app", app, "--region", region, "--host", host],
-    ))
+    r.run(&setup_cmd(dir, &setup_args(app, region, host, None)))
 }
 
-/// `scripts/fly-setup.sh --app APP --set-gh-secret ENV`: the script stores the deploy token as
-/// the `FLY_API_TOKEN` environment secret of the repo.
-pub fn set_gh_secret(r: &dyn Runner, dir: &Path, app: &str, env: &str) -> Out {
-    r.run(&setup_cmd(dir, &["--app", app, "--set-gh-secret", env]))
+/// The same call plus `--set-gh-secret ENV`: the script stores the deploy token as the
+/// `FLY_API_TOKEN` environment secret of the repo.
+pub fn set_gh_secret(
+    r: &dyn Runner,
+    dir: &Path,
+    app: &str,
+    region: &str,
+    host: &str,
+    env: &str,
+) -> Out {
+    r.run(&setup_cmd(dir, &setup_args(app, region, host, Some(env))))
 }
 
 #[cfg(test)]
@@ -95,6 +114,20 @@ mod tests {
             (ips.v4, ips.v6),
             (vec!["9.9.9.9".to_string()], vec!["2a09::1".to_string()])
         );
+    }
+
+    #[test]
+    fn gh_secret_call_carries_all_flags() {
+        assert_eq!(
+            setup_args("a", "fra", "h.io", Some("production")).join(" "),
+            "--app a --region fra --host h.io --set-gh-secret production"
+        );
+        assert!(
+            !setup_args("a", "fra", "h.io", None)
+                .join(" ")
+                .contains("--set-gh")
+        );
+        assert!(setup_cmd(Path::new("."), &[]).stdin.is_some());
     }
 
     #[test]

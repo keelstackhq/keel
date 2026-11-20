@@ -400,7 +400,7 @@ fn deploy_fly_reaches_the_merge_gate() {
         "{calls}"
     );
     assert!(
-        calls.contains("fly-setup.sh --app my-app --set-gh-secret production"),
+        calls.contains("fly-setup.sh --app my-app --region fra --host app.example.com --set-gh-secret production"),
         "{calls}"
     );
     assert!(!calls.contains("--deploy"), "{calls}");

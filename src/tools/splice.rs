@@ -98,9 +98,17 @@ pub fn check_pieces(wanted: &[String], list: &[PieceInfo]) -> Vec<String> {
     problems
 }
 
-/// `splice --json --yes new <source> . --ref <ref> --force --piece ID[:NAME]... [--data no_placeholder=true]`
-/// (`--force`: the checkout is never empty; keel commits `keel.toml` first so the tree is clean).
-pub fn new_cmd(dir: &Path, source: &str, git_ref: &str, pieces: &[String], rust: bool) -> Cmd {
+/// `splice --json --yes new <source> . --ref <ref> --force --piece ID[:NAME]... [--data no_placeholder=true]
+/// [--data app=APP]` (`--force`: the checkout is never empty; keel commits `keel.toml` first so the
+/// tree is clean). `fly_app` is `[deploy.fly] app`; it is passed only when a `fly` piece is listed.
+pub fn new_cmd(
+    dir: &Path,
+    source: &str,
+    git_ref: &str,
+    pieces: &[String],
+    rust: bool,
+    fly_app: Option<&str>,
+) -> Cmd {
     let mut args: Vec<&str> = vec![
         "--json", "--yes", "new", source, ".", "--ref", git_ref, "--force",
     ];
@@ -110,6 +118,13 @@ pub fn new_cmd(dir: &Path, source: &str, git_ref: &str, pieces: &[String], rust:
     }
     if rust {
         args.extend(["--data", "no_placeholder=true"]);
+    }
+    let data;
+    if let Some(app) = fly_app
+        && pieces.iter().any(|p| p == "fly" || p.starts_with("fly:"))
+    {
+        data = format!("app={app}");
+        args.extend(["--data", &data]);
     }
     Cmd::new("splice", &args).dir(dir)
 }
@@ -294,11 +309,30 @@ mod tests {
 
     #[test]
     fn new_passes_the_ref() {
-        let c = new_cmd(Path::new("."), "gh:a/b", "v1", &["p:x".into()], true);
+        let c = new_cmd(Path::new("."), "gh:a/b", "v1", &["p:x".into()], true, None);
         assert_eq!(
             c.line(),
             "splice --json --yes new gh:a/b . --ref v1 --force --piece p:x --data no_placeholder=true"
         );
+        for fly in ["fly", "fly:web"] {
+            let p = ["rust-service".to_string(), fly.to_string()];
+            let c = new_cmd(Path::new("."), "gh:a/b", "v1", &p, false, Some("my-app"));
+            assert!(
+                c.line()
+                    .ends_with(&format!("--piece {fly} --data app=my-app")),
+                "{}",
+                c.line()
+            );
+        }
+        let c = new_cmd(
+            Path::new("."),
+            "gh:a/b",
+            "v1",
+            &["sqlite".into()],
+            false,
+            Some("x"),
+        );
+        assert!(!c.line().contains("app="));
     }
 
     #[test]

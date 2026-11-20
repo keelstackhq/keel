@@ -13,11 +13,12 @@ fn login_step() -> HumanStep {
         id: "deploy".into(),
         title: "Log in to Fly.io".into(),
         url: "https://fly.io/docs/flyctl/auth-login/".into(),
-        command:
-            "fly auth login   # or: export FLY_API_TOKEN=$(fly tokens create org) then keel up"
-                .into(),
+        command: LOGIN_COMMAND.into(),
     }
 }
+
+const LOGIN_COMMAND: &str =
+    "fly auth login   # or: export FLY_API_TOKEN=$(fly tokens create org) then keel up";
 
 fn missing_piece() -> Check {
     Check::Failed(format!(
@@ -26,21 +27,26 @@ fn missing_piece() -> Check {
     ))
 }
 
-/// What a script exit means: 2 is an old script that does not take the flag.
-fn script_result(cx: &Ctx, args: &[&str], o: &Out) -> Option<Check> {
+/// What a script exit means: 2 is an old script that does not take `flag`; 3 is a missing tool
+/// or auth (human); 4 is a failed fly/gh step.
+fn script_result(cx: &Ctx, args: &[String], flag: &str, o: &Out) -> Option<Check> {
     if o.code == 0 {
         return None;
     }
     let cmd = fly::setup_cmd(&cx.dir, args);
-    Some(if o.code == 2 {
+    Some(if o.code == 3 {
+        Check::Human(HumanStep {
+            id: "deploy".into(),
+            title: "Log in to Fly.io and install flyctl/gh".into(),
+            url: "https://fly.io/docs/flyctl/auth-login/".into(),
+            command: LOGIN_COMMAND.into(),
+        })
+    } else if o.code == 2 {
         Check::Human(HumanStep {
             id: "deploy".into(),
             title: format!(
-                "Upgrade the hull fly piece: {} does not take {}",
-                fly::SETUP_SCRIPT,
-                args.iter()
-                    .find(|a| a.starts_with("--") && **a != "--app")
-                    .unwrap_or(&"these flags")
+                "Upgrade the hull fly piece: {} does not take {flag}",
+                fly::SETUP_SCRIPT
             ),
             url: String::new(),
             command: "splice --json --yes upgrade   # then keel up".into(),
@@ -94,14 +100,14 @@ impl Step for Deploy {
             return self.check(cx);
         };
         // Never `--deploy`: the first merge deploys.
-        let args = ["--app", &f.app, "--region", &f.region, "--host", &f.host];
+        let args = fly::setup_args(&f.app, &f.region, &f.host, None);
         let o = fly::setup(cx.runner, &cx.dir, &f.app, &f.region, &f.host);
-        if let Some(c) = script_result(cx, &args, &o) {
+        if let Some(c) = script_result(cx, &args, "--region", &o) {
             return Ok(c);
         }
-        let args = ["--app", &f.app, "--set-gh-secret", "production"];
-        let o = fly::set_gh_secret(cx.runner, &cx.dir, &f.app, "production");
-        if let Some(c) = script_result(cx, &args, &o) {
+        let args = fly::setup_args(&f.app, &f.region, &f.host, Some("production"));
+        let o = fly::set_gh_secret(cx.runner, &cx.dir, &f.app, &f.region, &f.host, "production");
+        if let Some(c) = script_result(cx, &args, "--set-gh-secret", &o) {
             return Ok(c);
         }
         self.check(cx)
@@ -234,8 +240,9 @@ pub(crate) mod tests {
         );
         assert_eq!(
             lines[1],
-            "scripts/fly-setup.sh --app app --set-gh-secret production"
+            "scripts/fly-setup.sh --app app --region fra --host app.example.com --set-gh-secret production"
         );
+        assert!(r.calls()[..2].iter().all(|c| c.stdin.is_some()));
         assert!(lines.iter().all(|l| !l.contains("--deploy")));
         assert!(lines[2].starts_with("fly auth whoami"));
     }
@@ -247,9 +254,20 @@ pub(crate) mod tests {
             panic!()
         };
         assert!(h.title.contains("Upgrade the hull fly piece") && h.title.contains("--region"));
-        let r = all_ok().on(&["scripts/fly-setup.sh"], Out::with(1, "", "boom"));
+        let r = all_ok().on(&["scripts/fly-setup.sh"], Out::with(4, "", "boom"));
         assert!(
             matches!(run(&r, &dir(true), fly_manifest(), true), Check::Failed(m) if m.contains("boom"))
         );
+    }
+
+    #[test]
+    fn script_exit_3_is_the_login_and_install_human_step() {
+        let r = all_ok().on(&["scripts/fly-setup.sh"], Out::with(3, "", "no flyctl"));
+        let Check::Human(h) = run(&r, &dir(true), fly_manifest(), true) else {
+            panic!()
+        };
+        assert_eq!(h.id, "deploy");
+        assert_eq!(h.title, "Log in to Fly.io and install flyctl/gh");
+        assert_eq!(h.command, login_step().command);
     }
 }
