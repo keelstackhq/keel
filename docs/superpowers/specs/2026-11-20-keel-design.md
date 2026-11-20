@@ -56,6 +56,7 @@ keel [-C DIR] [--json] [-v] doctor
   anything else is passed to `splice new` as the source.
 - `--wait SECS` (default 300): how long a GitHub-App gate polls before it returns exit 5. `0` = check
   once. Poll interval: `KEEL_POLL_SECS` (default 10).
+- Tool timeout: every `hoist` call and `scripts/fly-setup.sh` and `scripts/smoke.sh` are killed after `KEEL_TOOL_TIMEOUT_SECS` (default 600; a value that is not a positive integer is ignored). A timed-out call fails with "timed out after N s" (exit 124 internally).
 - `--token-stdin`: read the PAT for step 6 from stdin (one line, trailing newline trimmed).
 - `--confirm agent-env|dns|backup`: record that the cloud environment setup script is attached
   (step 7), that the DNS records were added by hand (step 9) or that the backup bucket was created
@@ -107,8 +108,8 @@ environment = "splice-bot"
 
 [confirmed]                       # written by --confirm
 agent_env = true
-dns = true                        # DNS records added by hand
-backup = true                     # backup bucket created by hand
+dns = "app.example.com"            # DNS records added by hand, for this host
+backup = "my-app"                   # backup bucket created by hand, for this app
 
 [deploy.fly]                      # optional; written by hand
 app = "my-app"                    # fly app name

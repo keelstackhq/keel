@@ -2,6 +2,7 @@ use super::{failure, json, not_json};
 use crate::exec::{Cmd, Out, Runner};
 use serde_json::Value;
 use std::path::Path;
+use std::time::Duration;
 
 pub enum Res {
     Ok,
@@ -54,10 +55,10 @@ fn area_args(areas: &[&str]) -> Vec<String> {
         .collect()
 }
 
-fn cmd(base: &[&str], extra: Vec<String>, dir: &Path) -> Cmd {
+fn cmd(base: &[&str], extra: Vec<String>, dir: &Path, t: Duration) -> Cmd {
     let mut a: Vec<&str> = base.to_vec();
     a.extend(extra.iter().map(String::as_str));
-    Cmd::new("hoist", &a).dir(dir)
+    Cmd::new("hoist", &a).dir(dir).timeout(t)
 }
 
 /// The part of the `cloudflare` area one step owns: hoist has no sub-areas, so a step reads
@@ -78,17 +79,17 @@ pub const R2: Slice = Slice {
 
 /// `hoist --json check --area github --area npm --area crates --area release`. A hoist that
 /// rejects `--area` (exit 2 without hoist JSON) gets the plain `check`.
-pub fn check_settings(r: &dyn Runner, dir: &Path) -> Res {
-    let c = cmd(&["--json", "check"], area_args(&SETTINGS_AREAS), dir);
+pub fn check_settings(r: &dyn Runner, dir: &Path, t: Duration) -> Res {
+    let c = cmd(&["--json", "check"], area_args(&SETTINGS_AREAS), dir, t);
     let o = r.run(&c);
     if old_hoist(&o) {
-        return check_plain(r, dir);
+        return check_plain(r, dir, t);
     }
     check_res(&c, &o)
 }
 
-fn check_plain(r: &dyn Runner, dir: &Path) -> Res {
-    let c = Cmd::new("hoist", &["--json", "check"]).dir(dir);
+fn check_plain(r: &dyn Runner, dir: &Path, t: Duration) -> Res {
+    let c = Cmd::new("hoist", &["--json", "check"]).dir(dir).timeout(t);
     check_res(&c, &r.run(&c))
 }
 
@@ -104,15 +105,18 @@ fn check_res(c: &Cmd, o: &Out) -> Res {
 }
 
 /// `hoist --json apply --yes` plus the same `--area` flags as [`check_settings`], same fallback.
-pub fn apply_settings(r: &dyn Runner, dir: &Path) -> Res {
+pub fn apply_settings(r: &dyn Runner, dir: &Path, t: Duration) -> Res {
     let c = cmd(
         &["--json", "apply", "--yes"],
         area_args(&SETTINGS_AREAS),
         dir,
+        t,
     );
     let o = r.run(&c);
     if old_hoist(&o) {
-        let c = Cmd::new("hoist", &["--json", "apply", "--yes"]).dir(dir);
+        let c = Cmd::new("hoist", &["--json", "apply", "--yes"])
+            .dir(dir)
+            .timeout(t);
         return apply_res(&c, &r.run(&c));
     }
     apply_res(&c, &o)
@@ -127,8 +131,8 @@ fn in_drift(item: &Value) -> bool {
 /// at least one item of the slice's kinds exists and every such item is done (see [`in_drift`]);
 /// no such item, or one that is not "ok", is drift. Exit 2 is `human_steps[0]` (never done). A
 /// hoist that rejects `--area` is `Upgrade`.
-pub fn check_cloudflare(r: &dyn Runner, dir: &Path, s: &Slice) -> Res {
-    let c = cmd(&["--json", "check"], area_args(&[CLOUDFLARE]), dir);
+pub fn check_cloudflare(r: &dyn Runner, dir: &Path, s: &Slice, t: Duration) -> Res {
+    let c = cmd(&["--json", "check"], area_args(&[CLOUDFLARE]), dir, t);
     let o = r.run(&c);
     if old_hoist(&o) {
         return Res::Upgrade;
@@ -160,10 +164,10 @@ pub fn check_cloudflare(r: &dyn Runner, dir: &Path, s: &Slice) -> Res {
 /// `hoist --json apply --yes --area cloudflare --secrets-to fly:APP`. The sink is always passed:
 /// the area also mints the R2 key when `[cloudflare.r2]` exists, and minting without a sink
 /// exits 3. Exit 2 is `human_steps[0]`.
-pub fn apply_cloudflare(r: &dyn Runner, dir: &Path, fly_app: &str) -> Res {
+pub fn apply_cloudflare(r: &dyn Runner, dir: &Path, fly_app: &str, t: Duration) -> Res {
     let mut extra = area_args(&[CLOUDFLARE]);
     extra.extend(["--secrets-to".to_string(), format!("fly:{fly_app}")]);
-    let c = cmd(&["--json", "apply", "--yes"], extra, dir);
+    let c = cmd(&["--json", "apply", "--yes"], extra, dir, t);
     let o = r.run(&c);
     if old_hoist(&o) {
         return Res::Upgrade;
@@ -295,6 +299,13 @@ mod tests {
     use super::*;
     use crate::exec::FakeRunner;
 
+    const T: Duration = Duration::from_secs(42);
+
+    fn all_timed(r: &FakeRunner) {
+        assert!(!r.calls().is_empty());
+        assert!(r.calls().iter().all(|c| c.timeout == Some(T)));
+    }
+
     fn lines(r: &FakeRunner) -> Vec<String> {
         r.calls().iter().map(|c| c.line()).collect()
     }
@@ -308,7 +319,8 @@ mod tests {
             Out::with(2, "", "error: unexpected argument '--area'"),
         );
         let r = r.on(&["hoist", "--json", "check"], Out::ok(r#"{"ok":true}"#));
-        assert!(matches!(check_settings(&r, Path::new(".")), Res::Ok));
+        assert!(matches!(check_settings(&r, Path::new("."), T), Res::Ok));
+        all_timed(&r);
         assert_eq!(
             lines(&r),
             [
@@ -317,14 +329,28 @@ mod tests {
             ]
         );
         let r = FakeRunner::new().on(&["hoist"], Out::ok(r#"{"ok":true,"items":[]}"#));
-        apply_settings(&r, Path::new("."));
+        apply_settings(&r, Path::new("."), T);
+        all_timed(&r);
         assert_eq!(lines(&r), [format!("hoist --json apply --yes {AREAS}")]);
+        // The old-hoist fallback is timed too.
+        let r = FakeRunner::new()
+            .on(
+                &["hoist", "--json", "apply", "--yes", "--area"],
+                Out::with(2, "", "unexpected argument"),
+            )
+            .on(
+                &["hoist", "--json", "apply", "--yes"],
+                Out::ok(r#"{"items":[]}"#),
+            );
+        apply_settings(&r, Path::new("."), T);
+        assert_eq!(r.calls().len(), 2);
+        all_timed(&r);
         // Exit 2 with hoist JSON is a human step, not an old hoist.
         let r = FakeRunner::new().on(
             &["hoist"],
             Out::with(2, r#"{"items":[],"human_steps":[]}"#, ""),
         );
-        assert!(matches!(check_settings(&r, Path::new(".")), Res::Drift));
+        assert!(matches!(check_settings(&r, Path::new("."), T), Res::Drift));
         assert_eq!(r.calls().len(), 1);
     }
 
@@ -332,7 +358,8 @@ mod tests {
     fn cloudflare_check_reads_the_slice_out_of_the_whole_area() {
         let chk = |out: Out, s: &Slice| {
             let r = FakeRunner::new().on(&["hoist"], out);
-            let res = check_cloudflare(&r, Path::new("."), s);
+            let res = check_cloudflare(&r, Path::new("."), s, T);
+            all_timed(&r);
             assert_eq!(lines(&r), ["hoist --json check --area cloudflare"]);
             res
         };
@@ -385,7 +412,8 @@ mod tests {
     fn cloudflare_apply_passes_the_sink_and_reads_exit_codes() {
         let run = |out: Out| {
             let r = FakeRunner::new().on(&["hoist"], out);
-            let res = apply_cloudflare(&r, Path::new("."), "app");
+            let res = apply_cloudflare(&r, Path::new("."), "app", T);
+            all_timed(&r);
             assert_eq!(
                 lines(&r),
                 ["hoist --json apply --yes --area cloudflare --secrets-to fly:app"]

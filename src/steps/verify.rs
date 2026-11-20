@@ -121,7 +121,9 @@ impl Step for Verify {
             // `plan` writes and runs nothing of the project's.
             v.smoke = Smoke::NotRun;
         } else if cx.dir.join(SMOKE).is_file() {
-            let mut c = Cmd::new(SMOKE, &[]).dir(&cx.dir);
+            let mut c = Cmd::new(SMOKE, &[])
+                .dir(&cx.dir)
+                .timeout(cx.opts.tool_timeout());
             c.env.push(("SMOKE_URL".into(), url.clone()));
             let o = cx.runner.run(&c);
             if o.code != 0 {
@@ -255,6 +257,7 @@ mod tests {
         assert!(matches!(c, Check::Done(_)));
         assert_eq!(v.unwrap().smoke, Smoke::Passed);
         let call = r.calls().pop().unwrap();
+        assert_eq!(call.timeout, Some(Duration::from_secs(600)));
         assert_eq!(
             call.env,
             [(

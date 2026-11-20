@@ -87,7 +87,7 @@ impl Step for Backup {
                 B::bucket(&f.app)
             )));
         }
-        let res = hoist::check_cloudflare(cx.runner, &cx.dir, &hoist::R2);
+        let res = hoist::check_cloudflare(cx.runner, &cx.dir, &hoist::R2, cx.opts.tool_timeout());
         Ok(hoist_check(
             res,
             self.id(),
@@ -115,7 +115,7 @@ impl Step for Backup {
                 return Ok(Check::Failed(e));
             }
         }
-        let res = hoist::apply_cloudflare(cx.runner, &cx.dir, &f.app);
+        let res = hoist::apply_cloudflare(cx.runner, &cx.dir, &f.app, cx.opts.tool_timeout());
         match hoist_check(res, self.id(), SECTION, "applied") {
             Check::Done(_) => self.check(cx),
             other => Ok(other),

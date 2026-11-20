@@ -108,7 +108,7 @@ impl Step for Dns {
                 f.host, f.app
             )));
         }
-        let res = hoist::check_cloudflare(cx.runner, &cx.dir, &hoist::DNS);
+        let res = hoist::check_cloudflare(cx.runner, &cx.dir, &hoist::DNS, cx.opts.tool_timeout());
         Ok(hoist_check(
             res,
             self.id(),
@@ -126,7 +126,7 @@ impl Step for Dns {
         {
             return Ok(Check::Failed(e));
         }
-        let res = hoist::apply_cloudflare(cx.runner, &cx.dir, &f.app);
+        let res = hoist::apply_cloudflare(cx.runner, &cx.dir, &f.app, cx.opts.tool_timeout());
         match hoist_check(res, self.id(), SECTION, "applied") {
             // keel never passes `--prune`: a record still in drift after apply is a stray
             // A/AAAA record hoist will not delete on its own.

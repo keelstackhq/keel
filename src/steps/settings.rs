@@ -31,11 +31,15 @@ impl Step for Settings {
     }
 
     fn check(&self, cx: &mut Ctx) -> Result<Check, KeelError> {
-        Ok(convert(hoist::check_settings(cx.runner, &cx.dir)))
+        Ok(convert(hoist::check_settings(
+            cx.runner,
+            &cx.dir,
+            cx.opts.tool_timeout(),
+        )))
     }
 
     fn apply(&self, cx: &mut Ctx) -> Result<Check, KeelError> {
-        match hoist::apply_settings(cx.runner, &cx.dir) {
+        match hoist::apply_settings(cx.runner, &cx.dir, cx.opts.tool_timeout()) {
             Res::Ok => self.check(cx),
             other => Ok(convert(other)),
         }

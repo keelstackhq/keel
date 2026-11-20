@@ -27,6 +27,7 @@ Node 24+ (checked in preflight).
 Global flags: `-C DIR` (checkout, default `.`), `--json`, `-v`. `up` and `plan` also take
 `--repo`, `--template rust|ts|SOURCE`, `--template-ref REF`, `--pieces ID[:NAME],...`, `--plan FILE`, `--wait SECS`,
 `--token-stdin`, `--confirm agent-env|dns|backup` (record a human step as done: the cloud setup script attached, DNS records or backup bucket made by hand).
+`KEEL_POLL_SECS` sets the gate poll interval; `KEEL_TOOL_TIMEOUT_SECS` (default 600) kills a `hoist`, `fly-setup.sh` or `smoke.sh` call that runs longer.
 
 ## Steps
 

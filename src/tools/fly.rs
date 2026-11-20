@@ -3,6 +3,7 @@
 use crate::exec::{Cmd, Out, Runner};
 use serde_json::Value;
 use std::path::Path;
+use std::time::Duration;
 
 pub const SETUP_SCRIPT: &str = "scripts/fly-setup.sh";
 
@@ -77,14 +78,14 @@ pub fn setup_args(app: &str, region: &str, host: &str, gh_secret_env: Option<&st
 
 /// The script's secrets go on stdin as `KEY=VALUE` lines; keel has none for it, so stdin is
 /// explicitly empty (never inherited).
-pub fn setup_cmd(dir: &Path, args: &[String]) -> Cmd {
+pub fn setup_cmd(dir: &Path, args: &[String], t: Duration) -> Cmd {
     let a: Vec<&str> = args.iter().map(String::as_str).collect();
-    Cmd::new(SETUP_SCRIPT, &a).dir(dir).stdin(vec![])
+    Cmd::new(SETUP_SCRIPT, &a).dir(dir).stdin(vec![]).timeout(t)
 }
 
 /// `scripts/fly-setup.sh --app A --region R --host H`: app, volume, secrets, IPs, certificate.
-pub fn setup(r: &dyn Runner, dir: &Path, app: &str, region: &str, host: &str) -> Out {
-    r.run(&setup_cmd(dir, &setup_args(app, region, host, None)))
+pub fn setup(r: &dyn Runner, dir: &Path, app: &str, region: &str, host: &str, t: Duration) -> Out {
+    r.run(&setup_cmd(dir, &setup_args(app, region, host, None), t))
 }
 
 /// The same call plus `--set-gh-secret ENV`: the script stores the deploy token as the
@@ -96,8 +97,13 @@ pub fn set_gh_secret(
     region: &str,
     host: &str,
     env: &str,
+    t: Duration,
 ) -> Out {
-    r.run(&setup_cmd(dir, &setup_args(app, region, host, Some(env))))
+    r.run(&setup_cmd(
+        dir,
+        &setup_args(app, region, host, Some(env)),
+        t,
+    ))
 }
 
 #[cfg(test)]
@@ -127,7 +133,11 @@ mod tests {
                 .join(" ")
                 .contains("--set-gh")
         );
-        assert!(setup_cmd(Path::new("."), &[]).stdin.is_some());
+        assert!(
+            setup_cmd(Path::new("."), &[], Duration::from_secs(1))
+                .stdin
+                .is_some()
+        );
     }
 
     #[test]

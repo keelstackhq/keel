@@ -33,7 +33,7 @@ fn script_result(cx: &Ctx, args: &[String], flag: &str, o: &Out) -> Option<Check
     if o.code == 0 {
         return None;
     }
-    let cmd = fly::setup_cmd(&cx.dir, args);
+    let cmd = fly::setup_cmd(&cx.dir, args, cx.opts.tool_timeout());
     Some(if o.code == 3 {
         Check::Human(HumanStep {
             id: "deploy".into(),
@@ -101,12 +101,27 @@ impl Step for Deploy {
         };
         // Never `--deploy`: the first merge deploys.
         let args = fly::setup_args(&f.app, &f.region, &f.host, None);
-        let o = fly::setup(cx.runner, &cx.dir, &f.app, &f.region, &f.host);
+        let o = fly::setup(
+            cx.runner,
+            &cx.dir,
+            &f.app,
+            &f.region,
+            &f.host,
+            cx.opts.tool_timeout(),
+        );
         if let Some(c) = script_result(cx, &args, "--region", &o) {
             return Ok(c);
         }
         let args = fly::setup_args(&f.app, &f.region, &f.host, Some("production"));
-        let o = fly::set_gh_secret(cx.runner, &cx.dir, &f.app, &f.region, &f.host, "production");
+        let o = fly::set_gh_secret(
+            cx.runner,
+            &cx.dir,
+            &f.app,
+            &f.region,
+            &f.host,
+            "production",
+            cx.opts.tool_timeout(),
+        );
         if let Some(c) = script_result(cx, &args, "--set-gh-secret", &o) {
             return Ok(c);
         }
@@ -244,6 +259,11 @@ pub(crate) mod tests {
             "scripts/fly-setup.sh --app app --region fra --host app.example.com --set-gh-secret production"
         );
         assert!(r.calls()[..2].iter().all(|c| c.stdin.is_some()));
+        assert!(
+            r.calls()[..2]
+                .iter()
+                .all(|c| c.timeout == Some(std::time::Duration::from_secs(600)))
+        );
         assert!(lines.iter().all(|l| !l.contains("--deploy")));
         assert!(lines[2].starts_with("fly auth whoami"));
     }
