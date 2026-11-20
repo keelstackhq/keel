@@ -26,18 +26,15 @@ fn zone(f: &Fly) -> String {
     })
 }
 
-fn section_text(f: &Fly, recs: &[(&str, String)]) -> String {
-    let host = &f.host;
-    let items: Vec<String> = recs
-        .iter()
-        .map(|(t, c)| {
-            format!("{{ type = \"{t}\", name = \"{host}\", content = \"{c}\", proxied = false }}")
-        })
-        .collect();
+/// hoist resolves the targets itself (`targets = "fly"` reads the fly app's addresses), so the
+/// section carries no addresses.
+fn section_text(f: &Fly) -> String {
+    let no_mail = if f.no_mail { "no_mail = true\n" } else { "" };
     format!(
-        "[{SECTION}]\nzone = \"{}\"\nrecords = [{}]\n",
+        "[{SECTION}]\nzone = \"{}\"\nhost = \"{}\"\ntargets = \"fly\"\nfly_app = \"{}\"\nproxied = false\n{no_mail}",
         zone(f),
-        items.join(", ")
+        f.host,
+        f.app
     )
 }
 
@@ -80,24 +77,24 @@ impl Step for Dns {
                 f.host
             )));
         }
-        let recs = match self.records(cx) {
-            Ok(r) => r,
-            // `dns = "none"` is never a failure: the records are the user's to add.
-            Err(_) if f.dns == Provider::None => {
-                return Ok(Check::Done(format!(
+        if f.dns == Provider::None {
+            return Ok(match self.records(cx) {
+                // `dns = "none"` is never a failure: the records are the user's to add.
+                Ok(recs) => Check::Done(format!(
+                    "add these DNS records at your DNS provider: {}",
+                    list(&f.host, &recs, "; ")
+                )),
+                Err(_) => Check::Done(format!(
                     "could not read the fly app's IPs; run `fly ips list --app {}` and add A/AAAA records for {} at your DNS provider",
                     f.app, f.host
-                )));
-            }
-            Err(c) => return Ok(c),
-        };
-        if f.dns == Provider::None {
-            return Ok(Check::Done(format!(
-                "add these DNS records at your DNS provider: {}",
-                list(&f.host, &recs, "; ")
-            )));
+                )),
+            });
         }
         if !cx.opts.cloudflare_token {
+            let recs = match self.records(cx) {
+                Ok(r) => r,
+                Err(c) => return Ok(c),
+            };
             let what = format!(
                 "add these DNS records (DNS only): {}",
                 list(&f.host, &recs, "; ")
@@ -106,11 +103,11 @@ impl Step for Dns {
         }
         if !hoist::has_section(&cx.dir, SECTION) {
             return Ok(Check::Todo(format!(
-                "add [{SECTION}] to hoist.toml and apply it: {}",
-                list(&f.host, &recs, "; ")
+                "add [{SECTION}] to hoist.toml and apply it ({} on fly app {})",
+                f.host, f.app
             )));
         }
-        let res = hoist::check_only(cx.runner, &cx.dir, Some(SECTION));
+        let res = hoist::check_cloudflare(cx.runner, &cx.dir, &hoist::DNS);
         Ok(hoist_check(
             res,
             self.id(),
@@ -123,16 +120,12 @@ impl Step for Dns {
         let Some(f) = cx.manifest.fly().cloned() else {
             return self.check(cx);
         };
-        if !hoist::has_section(&cx.dir, SECTION) {
-            let recs = match self.records(cx) {
-                Ok(r) => r,
-                Err(c) => return Ok(c),
-            };
-            if let Err(e) = hoist::append_section(&cx.dir, &section_text(&f, &recs)) {
-                return Ok(Check::Failed(e));
-            }
+        if !hoist::has_section(&cx.dir, SECTION)
+            && let Err(e) = hoist::append_section(&cx.dir, &section_text(&f))
+        {
+            return Ok(Check::Failed(e));
         }
-        let res = hoist::apply_only(cx.runner, &cx.dir, Some(SECTION));
+        let res = hoist::apply_cloudflare(cx.runner, &cx.dir, &hoist::DNS, &f.app);
         match hoist_check(res, self.id(), SECTION, "applied") {
             Check::Done(_) => self.check(cx),
             other => Ok(other),
@@ -259,12 +252,13 @@ mod tests {
                 "{m}"
             );
         }
-        // Cloudflare still fails: it cannot write records without addresses.
-        let r = FakeRunner::new().on(&["fly", "ips", "list"], Out::ok("[]"));
+        // Cloudflare with a token needs no addresses: hoist reads them from fly.
+        let r = FakeRunner::new();
         assert!(matches!(
             run(&r, d.path(), cf_manifest(), true, false),
-            Check::Failed(_)
+            Check::Todo(_)
         ));
+        assert!(r.calls().is_empty());
     }
 
     #[test]
@@ -305,9 +299,9 @@ mod tests {
     }
 
     #[test]
-    fn apply_writes_the_section_then_hoist_only() {
+    fn apply_writes_the_fly_targets_section_then_applies_the_cloudflare_area() {
         let d = tempfile::tempdir().unwrap();
-        let r = fly_ips()
+        let r = FakeRunner::new()
             .on(
                 &["hoist", "--json", "apply"],
                 Out::ok(r#"{"ok":true,"items":[]}"#),
@@ -318,24 +312,66 @@ mod tests {
             Check::Done(_)
         ));
         let t = std::fs::read_to_string(d.path().join("hoist.toml")).unwrap();
-        assert!(
-            t.contains("[cloudflare.dns]\nzone = \"example.com\"\nrecords = ["),
-            "{t}"
+        assert_eq!(
+            t,
+            "[cloudflare.dns]\nzone = \"example.com\"\nhost = \"app.example.com\"\ntargets = \"fly\"\nfly_app = \"app\"\nproxied = false\n"
         );
-        assert!(t.contains(
-            "{ type = \"A\", name = \"app.example.com\", content = \"1.2.3.4\", proxied = false }"
-        ));
-        assert!(t.contains("type = \"AAAA\""));
         let lines: Vec<String> = r.calls().iter().map(|c| c.line()).collect();
-        assert!(lines.contains(&"hoist --json apply --yes --only cloudflare.dns".to_string()));
-        assert!(lines.contains(&"hoist --json check --only cloudflare.dns".to_string()));
+        assert_eq!(
+            lines,
+            [
+                "hoist --json apply --yes --area cloudflare --secrets-to fly:app",
+                "hoist --json check --area cloudflare"
+            ]
+        );
+    }
+
+    #[test]
+    fn no_mail_adds_the_flag_to_the_section() {
+        let d = tempfile::tempdir().unwrap();
+        let mut m = cf_manifest();
+        m.deploy.as_mut().unwrap().fly.as_mut().unwrap().no_mail = true;
+        let r = FakeRunner::new().on(&["hoist"], Out::ok(r#"{"ok":true,"items":[]}"#));
+        run(&r, d.path(), m, true, true);
+        let t = std::fs::read_to_string(d.path().join("hoist.toml")).unwrap();
+        assert!(t.ends_with("proxied = false\nno_mail = true\n"), "{t}");
+    }
+
+    #[test]
+    fn check_reads_dns_drift_and_human_steps_out_of_the_cloudflare_area() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("hoist.toml"), "[cloudflare.dns]\n").unwrap();
+        let chk = |o: Out| {
+            let r = FakeRunner::new().on(&["hoist"], o);
+            let c = run(&r, d.path(), cf_manifest(), true, false);
+            assert_eq!(r.calls()[0].line(), "hoist --json check --area cloudflare");
+            c
+        };
+        let ok =
+            r#"{"items":[{"kind":"dns_record","key":"app.example.com A 1.2.3.4","action":"ok"}]}"#;
+        assert!(matches!(chk(Out::ok(ok)), Check::Done(_)));
+        let drift = r#"{"items":[{"kind":"dns_record","key":"app.example.com A 1.2.3.4","action":"create"}]}"#;
+        assert!(matches!(chk(Out::with(1, drift, "")), Check::Todo(_)));
+        // Drift in another kind (r2) is the backup step's, not dns'.
+        let r2 = r#"{"items":[{"kind":"r2_bucket","key":"b","action":"create"}]}"#;
+        assert!(matches!(chk(Out::with(1, r2, "")), Check::Done(_)));
+        let human = r#"{"items":[],"human_steps":[{"id":"dns:app.example.com A","title":"Add the A record","url":"https://dash.cloudflare.com"}]}"#;
+        let Check::Human(h) = chk(Out::with(2, human, "")) else {
+            panic!()
+        };
+        assert_eq!(
+            (h.id.as_str(), h.title.as_str()),
+            ("dns", "Add the A record")
+        );
+        let other = r#"{"items":[],"human_steps":[{"id":"pages:x","title":"t","url":""}]}"#;
+        assert!(matches!(chk(Out::with(2, other, "")), Check::Done(_)));
     }
 
     #[test]
     fn old_hoist_is_an_upgrade_human_step() {
         let d = tempfile::tempdir().unwrap();
         std::fs::write(d.path().join("hoist.toml"), "[cloudflare.dns]\n").unwrap();
-        let r = fly_ips().on(&["hoist"], Out::with(2, "", "unexpected argument '--only'"));
+        let r = fly_ips().on(&["hoist"], Out::with(2, "", "unexpected argument '--area'"));
         let Check::Human(h) = run(&r, d.path(), cf_manifest(), true, false) else {
             panic!()
         };

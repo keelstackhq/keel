@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 use zeroize::Zeroizing;
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Opts {
     pub wait_secs: u64,
     pub poll_secs: u64,
@@ -13,6 +13,8 @@ pub struct Opts {
     pub dry_run: bool,
     /// `CLOUDFLARE_API_TOKEN` is set. Only its presence is ever read.
     pub cloudflare_token: bool,
+    /// `CLOUDFLARE_ACCOUNT_ID` (an id, not a secret), when set and non-empty.
+    pub cloudflare_account_id: Option<String>,
 }
 
 pub struct Ctx<'a> {

@@ -36,12 +36,12 @@ Global flags: `-C DIR` (checkout, default `.`), `--json`, `-v`. `up` and `plan` 
 | 2 | apps | Claude and Renovate GitHub Apps installed (human gate) |
 | 3 | render | renders the template (at `template_ref`) and pieces with splice on a branch, commits only the files it wrote |
 | 4 | governance | `bosun init`, optional plan import |
-| 5 | settings | `hoist apply` for repo settings (leaves the `[cloudflare.*]` sections to dns and backup) |
+| 5 | settings | `hoist apply` for repo settings for everything but the `cloudflare` area (left to dns and backup) |
 | 6 | token | stores the bot PAT as an environment secret (human gate) |
 | 7 | agent-env | writes `.keel/cloud-setup.sh` for the cloud environment (human gate) |
 | 8 | deploy | `[deploy.fly]`: runs the hull `scripts/fly-setup.sh` (app, volume, secrets, certificate; exit 3 = log in and install flyctl/gh) and stores the production deploy token (needs `fly auth login`) |
-| 9 | dns | A/AAAA records for the host, through hoist `[cloudflare.dns]` when `dns = "cloudflare"` and `CLOUDFLARE_API_TOKEN` is set; else it lists the records to add (a shared v4 is used when the app has no dedicated one; with `dns = "none"` the step never fails); `keel up --confirm dns` records that you added them |
-| 10 | backup | `[backup]`: R2 bucket with a lifecycle rule and a scoped key delivered to the fly app by hoist as the `BACKUP_S3_*` secrets (`provider = "r2"`; build the service with the `s3-backup` feature); `keel up --confirm backup` records a bucket made by hand |
+| 9 | dns | A/AAAA records for the host, through hoist `[cloudflare.dns]` (`targets = "fly"`; `no_mail = true` in `[deploy.fly]` adds SPF and DMARC) when `dns = "cloudflare"` and `CLOUDFLARE_API_TOKEN` is set (Zone Read + DNS Write); else it lists the records to add (a shared v4 is used when the app has no dedicated one; with `dns = "none"` the step never fails); `keel up --confirm dns` records that you added them |
+| 10 | backup | `[backup]`: R2 bucket `<app>-backup` with a lifecycle rule and a scoped key that hoist delivers to the fly app as `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, `R2_ENDPOINT` (`provider = "r2"`; needs the Cloudflare account id: `[backup] account_id` or env `CLOUDFLARE_ACCOUNT_ID`); `keel up --confirm backup` records a bucket made by hand |
 | 11 | doctor | `bosun doctor --remote`, push the branch, open the PR |
 | 12 | merge | a human approves and merges the PR (human gate) |
 | 13 | verify | after the merge: the deploy workflow succeeded, `https://HOST/healthz` answers 200, `scripts/smoke.sh` passes (`keel plan` does not run it). Prints a `verify` object in `--json` |
@@ -71,10 +71,12 @@ host = "app.example.com"          # no scheme
 dns = "cloudflare"                # or "none" (default)
 zone = "example.com"              # optional; HOST or a parent domain. Default: last two labels
                                   # of host (set it for hosts such as app.example.co.uk)
+no_mail = false                   # true: also SPF and DMARC records for the host
 
 [backup]                          # optional; needs [deploy.fly]
 provider = "r2"                   # or "s3" (not automated)
 retention_days = 30
+account_id = "..."                # optional; default env CLOUDFLARE_ACCOUNT_ID (not a secret)
 ```
 
 Unknown keys are an error. keel never reads or prints `CLOUDFLARE_API_TOKEN` or a Fly token: it

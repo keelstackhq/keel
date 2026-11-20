@@ -37,7 +37,7 @@ pub fn all_steps() -> Vec<Box<dyn Step>> {
     ]
 }
 
-/// A hoist `--only SECTION` outcome as a step result. `Done` carries `done_msg`.
+/// A hoist `--area cloudflare` outcome for the `[SECTION]` a step owns as a step result. `Done` carries `done_msg`.
 pub(crate) fn hoist_check(
     res: crate::tools::hoist::Res,
     id: &str,

@@ -103,6 +103,9 @@ pub fn run_with(
             dry_run: command == Mode::Plan,
             cloudflare_token: std::env::var_os("CLOUDFLARE_API_TOKEN")
                 .is_some_and(|v| !v.is_empty()),
+            cloudflare_account_id: std::env::var("CLOUDFLARE_ACCOUNT_ID")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
         },
         verify: None,
         sleep,

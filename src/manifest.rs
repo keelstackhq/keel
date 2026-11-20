@@ -52,6 +52,9 @@ pub struct Fly {
     /// Default: the last two labels of `host`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zone: Option<String>,
+    /// The host sends no mail: hoist adds SPF and DMARC records for it (`no_mail = true`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_mail: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -74,6 +77,17 @@ pub struct Backup {
     pub provider: Provider,
     #[serde(default = "default_retention")]
     pub retention_days: u32,
+    /// The Cloudflare account id for the R2 bucket; default: env `CLOUDFLARE_ACCOUNT_ID`
+    /// (not a secret).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+}
+
+impl Backup {
+    /// The R2 bucket name for the fly app: `<lowercased app>-backup`.
+    pub fn bucket(app: &str) -> String {
+        format!("{}-backup", app.to_lowercase())
+    }
 }
 
 fn default_retention() -> u32 {
@@ -176,6 +190,17 @@ impl Manifest {
             }
             if b.retention_days < 1 {
                 return Err(manifest_err("[backup] `retention_days` must be at least 1"));
+            }
+            let bucket = Backup::bucket(&self.fly().expect("checked above").app);
+            if b.provider == Provider::R2
+                && !((3..=63).contains(&bucket.len())
+                    && bucket
+                        .bytes()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-'))
+            {
+                return Err(manifest_err(format!(
+                    "[deploy.fly] `app` gives the R2 bucket name {bucket:?}; a bucket name is 3-63 characters of a-z, 0-9 and `-`: rename the app or use provider = \"s3\""
+                )));
             }
         }
         Ok(())
@@ -363,6 +388,28 @@ mod tests {
         assert_eq!((f.app.as_str(), f.dns), ("a", Dns::None));
         let b = m.backup.as_ref().unwrap();
         assert_eq!((b.provider, b.retention_days), (Provider::R2, 30));
+        assert_eq!((f.no_mail, b.account_id.as_deref()), (false, None));
+        let m2 = Manifest::parse(&format!(
+            "{FLY}no_mail = true\n[backup]\nprovider = \"r2\"\naccount_id = \"abc\"\n"
+        ))
+        .unwrap();
+        assert!(m2.fly().unwrap().no_mail);
+        assert_eq!(m2.backup.unwrap().account_id.as_deref(), Some("abc"));
+        // Uppercase app names are lowercased for the bucket; s3 has no bucket to name.
+        assert!(
+            Manifest::parse(&format!(
+                "{}[backup]\nprovider = \"r2\"\n",
+                FLY.replace("\"a\"", "\"My-App\"")
+            ))
+            .is_ok()
+        );
+        assert!(
+            Manifest::parse(&format!(
+                "{}[backup]\nprovider = \"s3\"\n",
+                FLY.replace("\"a\"", "\"my_app\"")
+            ))
+            .is_ok()
+        );
         let dir = tempfile::tempdir().unwrap();
         m.write(dir.path()).unwrap();
         assert_eq!(Manifest::load(dir.path()).unwrap(), m);
@@ -386,6 +433,18 @@ mod tests {
                 "retention_days",
             ),
             ("[backup]\nprovider = \"r2\"\n".to_string(), "[deploy.fly]"),
+            (
+                format!(
+                    "{}[backup]\nprovider = \"r2\"\n",
+                    FLY.replace("\"a\"", "\"my_app\"")
+                ),
+                "deploy.fly",
+            ),
+            (format!("{FLY}no_mails = true\n"), "no_mails"),
+            (
+                format!("{FLY}[backup]\nprovider = \"r2\"\naccount_ids = \"x\"\n"),
+                "account_ids",
+            ),
             (
                 "[deploy.fly]\napp = \"a\"\nregion = \"fra\"\n".to_string(),
                 "host",

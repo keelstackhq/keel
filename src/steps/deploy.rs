@@ -131,6 +131,7 @@ pub(crate) mod tests {
                     host: "app.example.com".into(),
                     dns: Default::default(),
                     zone: None,
+                    no_mail: false,
                 }),
             }),
             ..manifest("rust")

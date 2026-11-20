@@ -8,7 +8,7 @@ their tool adapters) and the npm launcher with five platform packages (0.1.0). S
 Nothing is released or published yet.
 
 Deploy, DNS, backup and verify (`[deploy.fly]`, `[backup]`; steps deploy, dns, backup, verify) and
-issue #2 land on `claude/keel-deploy-backup-dns`. The fly-setup.sh, hoist `--only`/`--skip` and
+issue #2 land on `claude/keel-deploy-backup-dns`. The fly-setup.sh, hoist `--area`/`--secrets-to` flags (relayed) and
 bosun `pr --single` flags are assumed behind adapters until upstream relays the exact ones.
 
 ## Blocked

@@ -436,3 +436,46 @@ fn merged_deploy_is_verified_over_http() {
     let (_, out, _) = run(&env2, "done", &["--json".into(), "up".into()], "");
     assert!(one_json(&out).get("verify").is_none());
 }
+
+#[test]
+fn cloudflare_dns_and_backup_use_the_area_flag_and_the_fly_sink() {
+    let env = Env::new();
+    fly_repo(&env);
+    let manifest = format!(
+        "{FLY_MANIFEST}dns = \"cloudflare\"\n[backup]\nprovider = \"r2\"\naccount_id = \"acc123\"\n"
+    );
+    std::fs::write(env.repo.join("keel.toml"), manifest).unwrap();
+    let mut cmd = env.keel("deploy", &["--json", "up"]);
+    let o = cmd
+        .env("CLOUDFLARE_API_TOKEN", "dummy-not-a-secret")
+        .output()
+        .unwrap();
+    let (out, err) = (
+        String::from_utf8(o.stdout).unwrap(),
+        String::from_utf8(o.stderr).unwrap(),
+    );
+    assert_eq!(o.status.code(), Some(5), "{out} {err}");
+    let calls = env.read("calls.log");
+    assert!(
+        calls.contains("hoist --json apply --yes --area cloudflare --secrets-to fly:my-app"),
+        "{calls}"
+    );
+    assert!(
+        calls.contains("hoist --json check --area github --area npm --area crates --area release"),
+        "{calls}"
+    );
+    assert!(
+        !calls.contains("--only") && !calls.contains("--skip"),
+        "{calls}"
+    );
+    assert!(!calls.contains("dummy-not-a-secret") && !out.contains("dummy-not-a-secret"));
+    let t = std::fs::read_to_string(env.repo.join("hoist.toml")).unwrap();
+    assert!(
+        t.contains("[cloudflare.dns]") && t.contains("targets = \"fly\""),
+        "{t}"
+    );
+    assert!(
+        t.contains("[cloudflare.r2]") && t.contains("account_id = \"acc123\""),
+        "{t}"
+    );
+}
