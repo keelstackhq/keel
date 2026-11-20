@@ -20,8 +20,8 @@ its JSON, and stops at the first step only a human can do. keel never reimplemen
 - **Idempotent.** Each step checks first and skips what is done. A re-run resumes.
 - **One answer.** `--json` prints exactly one object: done, the single human step left (with the
   exact link or command), a failed step, or an error.
-- **Subprocesses only.** keel calls `gh`, `git`, `npm`, `node`, `cargo`, `splice`, `bosun` and
-  `hoist`. It has no HTTP client of its own (so no TLS stack: the "rustls only" family rule holds
+- **Subprocesses only.** keel calls `gh`, `git`, `npm`, `node`, `cargo`, `splice`, `bosun`,
+  `hoist`, `fly` and `curl`. It has no HTTP client of its own (so no TLS stack: the "rustls only" family rule holds
   trivially). GitHub reads and writes go through `gh api` / `gh secret` / `gh pr`.
 - **Adapters.** Each tool has one small module (`src/tools/<tool>.rs`) that builds argv and
   parses output. When a tool lacks a feature keel needs (old version), the adapter degrades to a
@@ -82,6 +82,9 @@ pending (D-020; 5 matches bosun's needs-human). Help and version exit 0. With `-
 - `status`: `done` | `human` | `failed` | `planned` | `error`.
 - `steps[].action`: `ok` (already done, skipped) · `done` (keel did it now) · `would-run` (`plan`)
   · `pending` (human gate) · `failed` · `not-reached`.
+- `verify`: present only when the manifest has `[deploy.fly]`:
+  `{"url":"https://HOST","healthz":"ok"|"failed"|"not-run","http_status":200|null,"smoke":"passed"|"failed"|"none"|"not-run"}`.
+  `not-run` until the `verify` step has reached that check. Text output adds a `verify:` line.
 - `human_step`: null, or `{id, title, url, command}` (`url`/`command` may be `""`). At most one.
 - On exit 2 or 3: same envelope, `status:"error"`, `steps:[]`, `human_step:null`, plus
   `error:{message, fix}`.
@@ -103,7 +106,21 @@ environment = "splice-bot"
 
 [confirmed]                       # written by --confirm
 agent_env = true
+
+[deploy.fly]                      # optional; written by hand
+app = "my-app"                    # fly app name
+region = "fra"
+host = "app.example.com"          # public hostname, no scheme
+dns = "cloudflare"                # "cloudflare" | "none" (default "none")
+
+[backup]                          # optional; needs [deploy.fly]
+provider = "r2"                   # "r2" | "s3"
+retention_days = 30               # >= 1; default 30
 ```
+
+The pieces may include `sqlite` and `fly`; splice validates them. A bad enum value, an empty
+`app`/`region`/`host`, `retention_days = 0` or `[backup]` without `[deploy.fly]` is a manifest error
+(exit 3, names the key).
 
 Unknown keys are an error (exit 3, names the key). keel writes the file atomically (a temp file in the same directory, then a rename) on the first run (before
 any other write) and commits it with the render.
@@ -123,8 +140,12 @@ every `check` only and marks work `would-run`; it stops after the first human ga
 | 5 | `settings` | `hoist --json check` exits 0 | `hoist --json apply --yes`; hoist human steps become keel's human step |
 | 6 | `token` | `gh api repos/R/environments/ENV/secrets/NAME` succeeds | with `--token-stdin`: read stdin, `gh secret set NAME --env ENV --repo R` (value on stdin). Without: human gate with the PAT link (§7) |
 | 7 | `agent-env` | `keel.toml` `[confirmed] agent_env = true` | write `.keel/cloud-setup.sh` (§8); human gate: attach it, then `keel up --confirm agent-env` |
-| 8 | `doctor` | `bosun doctor --remote` (`--all` tried first, §10) has no `missing` item (any missing item is a failed step, never a push or PR); a PR from the work branch exists. Offline doctor (exit 5, `data.offline`) is a human step: `export GH_TOKEN=$(gh auth token)`, then `keel up` | commit keel's own files only (`keel.toml`, `.gitignore`, `Cargo.lock`; nothing keel-owned changed means no commit), `git push -u origin <branch>` (never force), `gh pr create` |
-| 9 | `merge` | the PR is merged (`gh pr view --json state,headRefOid`) | none: human gate "approve head SHA `<sha>` and merge PR #N" |
+| 8 | `deploy` | no `[deploy.fly]`: done. Else `scripts/fly-setup.sh` exists (no: failed, "add the `fly` piece"); `fly auth whoami --json` exits 0 (no: human "Log in to Fly.io"); `fly status --app APP --json`, `fly certs show HOST --app APP --json` exit 0; `gh api repos/R/environments/production/secrets/FLY_API_TOKEN` succeeds | `scripts/fly-setup.sh --app APP --region R --host H` (app, volume, secrets, IPs, certificate), then `scripts/fly-setup.sh --app APP --set-gh-secret production` (the script pipes the deploy token into `gh secret set`; keel never sees it). Never `--deploy`: the first merge deploys. Script exit 2 (old script) is a human step: upgrade the hull fly piece |
+| 9 | `dns` | no `[deploy.fly]`: done. `fly ips list --app APP --json` gives the `v4`/`v6` addresses; records `A HOST v4`, `AAAA HOST v6`. `dns = "none"`: done, the detail lists the records to add by hand. `dns = "cloudflare"` without `CLOUDFLARE_API_TOKEN` (presence only): human "Set CLOUDFLARE_API_TOKEN or add these DNS records". With it: `hoist.toml` has `[cloudflare.dns]` and `hoist --json check --only cloudflare.dns` exits 0 | append `[cloudflare.dns]` (`zone` = last two labels of HOST, `records`, `proxied = false`) to `hoist.toml` when absent; `hoist --json apply --yes --only cloudflare.dns`. A hoist that rejects `--only` is a human step: `npm install -g @keelstackhq/hoist@latest` |
+| 10 | `backup` | no `[backup]`: done. `s3`: done with a warning (not automated: create the bucket and set the secrets on the fly app by hand). `r2`: needs `CLOUDFLARE_API_TOKEN` (else human); `hoist.toml` has `[cloudflare.r2]` and `hoist --json check --only cloudflare.r2` exits 0 | append `[cloudflare.r2]` (`bucket = "APP-backup"`, `lifecycle = { expire_days = N }`, `key = { scope = "object-rw", sink = "fly:APP" }`); `hoist --json apply --yes --only cloudflare.r2`. The key goes from hoist to the fly secrets, never through keel |
+| 11 | `doctor` | `bosun doctor --remote` (`--all` tried first, §10) has no `missing` item (any missing item is a failed step, never a push or PR); a PR from the work branch exists. Offline doctor (exit 5, `data.offline`) is a human step: `export GH_TOKEN=$(gh auth token)`, then `keel up` | commit keel's own files only (`keel.toml`, `hoist.toml`, `.gitignore`, `Cargo.lock`; nothing keel-owned changed means no commit), `git push -u origin <branch>` (never force), `gh pr create` |
+| 12 | `merge` | the PR is merged (`gh pr view --json state,headRefOid`) | none: human gate "approve head SHA `<sha>` and merge PR #N" |
+| 13 | `verify` | no `[deploy.fly]`: done. After the merge: the newest `deploy.yml` run on the default branch (`gh run list --repo R --workflow deploy.yml --branch B --limit 1 --json status,conclusion,url`) is `completed`, polled every `KEEL_POLL_SECS` up to `--wait`; a conclusion other than `success` is failed (with the run URL); no run yet is a human step "wait for the first deploy". Then `curl -fsS -o /dev/null -w %{http_code} --max-time 10 https://HOST/healthz` gives 200 (polled the same way; else failed). Then `scripts/smoke.sh` with `SMOKE_URL=https://HOST` when it exists. The outcome is the report's `verify` key | none: read-only |
 
 ### 5.1 Branch
 

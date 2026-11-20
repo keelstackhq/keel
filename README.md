@@ -39,8 +39,14 @@ Global flags: `-C DIR` (checkout, default `.`), `--json`, `-v`. `up` and `plan` 
 | 5 | settings | `hoist apply` for repo settings |
 | 6 | token | stores the bot PAT as an environment secret (human gate) |
 | 7 | agent-env | writes `.keel/cloud-setup.sh` for the cloud environment (human gate) |
-| 8 | doctor | `bosun doctor --remote`, push the branch, open the PR |
-| 9 | merge | a human approves and merges the PR (human gate) |
+| 8 | deploy | `[deploy.fly]`: runs the hull `scripts/fly-setup.sh` (app, volume, secrets, certificate) and stores the production deploy token (needs `fly auth login`) |
+| 9 | dns | A/AAAA records for the host, through hoist `[cloudflare.dns]` when `dns = "cloudflare"` and `CLOUDFLARE_API_TOKEN` is set; else it lists the records to add |
+| 10 | backup | `[backup]`: R2 bucket with a lifecycle rule and a scoped key delivered to the fly app by hoist (`provider = "r2"`) |
+| 11 | doctor | `bosun doctor --remote`, push the branch, open the PR |
+| 12 | merge | a human approves and merges the PR (human gate) |
+| 13 | verify | after the merge: the deploy workflow succeeded, `https://HOST/healthz` answers 200, `scripts/smoke.sh` passes. Prints a `verify` object in `--json` |
+
+The deploy, dns, backup and verify steps do nothing without `[deploy.fly]` / `[backup]` in `keel.toml`.
 
 keel never merges, tags, releases, publishes or force-pushes.
 
@@ -57,9 +63,20 @@ branch = "keel/bootstrap"         # optional
 [token]                           # optional
 secret = "SPLICE_BOT_TOKEN"
 environment = "splice-bot"
+
+[deploy.fly]                      # optional; add the `fly` piece to `pieces`
+app = "my-app"
+region = "fra"
+host = "app.example.com"          # no scheme
+dns = "cloudflare"                # or "none" (default)
+
+[backup]                          # optional; needs [deploy.fly]
+provider = "r2"                   # or "s3" (not automated)
+retention_days = 30
 ```
 
-Unknown keys are an error.
+Unknown keys are an error. keel never reads or prints `CLOUDFLARE_API_TOKEN` or a Fly token: it
+only checks that the Cloudflare one is set, and hoist and the hull script move the secrets.
 
 ## Exit codes
 
@@ -77,6 +94,9 @@ environment or API error · 5 a human step is pending. `keel --json --help` prin
  "human_step":{"id":"apps","title":"Install the Renovate GitHub App on owner/name",
                "url":"https://github.com/apps/renovate/installations/new","command":"keel up"}}
 ```
+
+With `[deploy.fly]` the object also has `"verify":{"url":"https://HOST","healthz":"ok","http_status":200,"smoke":"none"}`
+(`healthz`: `ok`|`failed`|`not-run`; `smoke`: `passed`|`failed`|`none`|`not-run`).
 
 ## Security: the PAT
 
