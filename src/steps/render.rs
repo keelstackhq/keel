@@ -58,6 +58,16 @@ fn resume_uncommitted(cx: &Ctx, tpl: &str) -> Option<Check> {
     }
 }
 
+/// For any hull source form: the template tag must still point at the commit keel pinned
+/// (read-only `git ls-remote`). `Some(problem)` otherwise.
+fn hull_problem(cx: &Ctx, src: &str, git_ref: &str) -> Option<String> {
+    if !splice::is_hull_source(src) {
+        return None;
+    }
+    let pinned = cx.pins.ref_sha("hull", git_ref);
+    splice::verify_hull_ref(cx.runner, &cx.dir, git_ref, pinned).err()
+}
+
 impl Step for Render {
     fn id(&self) -> &'static str {
         "render"
@@ -68,6 +78,13 @@ impl Step for Render {
         // A saved list means a render whose commit has not happened yet (any template).
         if lock && cx.dir.join(LIST).is_file() {
             return Ok(Check::Todo("a previous render is not committed yet".into()));
+        }
+        // `keel plan` shows a moved hull tag as a failed render (read-only check).
+        let tag = cx.manifest.template_ref.clone();
+        if let (false, Ok(tpl), Some(git_ref)) = (lock, template(cx), tag)
+            && let Some(e) = hull_problem(cx, splice::source(&tpl), &git_ref)
+        {
+            return Ok(Check::Failed(e));
         }
         let needs_cargo_lock =
             cx.dir.join("Cargo.toml").is_file() && !cx.dir.join("Cargo.lock").is_file();
@@ -92,11 +109,8 @@ impl Step for Render {
 
         if !lock_before {
             // The template tag must still point at the commit keel pinned.
-            if src.starts_with("gh:keelstackhq/hull") {
-                let pinned = cx.pins.ref_sha("hull", &git_ref);
-                if let Err(e) = splice::verify_hull_ref(r, &cx.dir, &git_ref, pinned) {
-                    return Ok(Check::Failed(e));
-                }
+            if let Some(e) = hull_problem(cx, &src, &git_ref) {
+                return Ok(Check::Failed(e));
             }
             // Validate piece names before touching the checkout.
             match splice::pieces(r, &cx.dir, &src, &git_ref) {
@@ -253,7 +267,10 @@ mod tests {
     #[test]
     fn check_states() {
         let d = tempfile::tempdir().unwrap();
-        let r = FakeRunner::new();
+        let r = FakeRunner::new().on(
+            &["git", "ls-remote"],
+            Out::ok("3f4a65fda568cdd20c76168ed156d25a28ba5630\trefs/tags/v0.13.0\n"),
+        );
         let mut cx = ctx(
             &r,
             d.path().into(),
@@ -438,6 +455,43 @@ mod tests {
         assert!(m.contains("KEEL_PINS"), "{m}");
         let r = fake().on(&["git", "ls-remote"], Out::with(128, "", "no net"));
         assert!(matches!(pinned(d.path(), &r, "v0.13.0"), Check::Failed(_)));
+        assert!(!lines(&r).iter().any(|l| l.contains(" new ")));
+    }
+
+    #[test]
+    fn check_fails_on_a_moved_hull_tag_for_every_source_form() {
+        for tpl in [
+            "rust",
+            "gh:keelstackhq/hull.git//template",
+            "https://github.com/keelstackhq/hull//template",
+            "https://github.com/keelstackhq/hull.git",
+        ] {
+            let d = tempfile::tempdir().unwrap();
+            let r =
+                FakeRunner::new().on(&["git", "ls-remote"], Out::ok("bad\trefs/tags/v0.13.0\n"));
+            let Check::Failed(m) = check(&r, d.path(), tpl) else {
+                panic!("{tpl}")
+            };
+            assert!(m.contains("moved"), "{tpl}: {m}");
+        }
+        // Not hull: no ls-remote, plain Todo. Rendered already: not re-verified.
+        let d = tempfile::tempdir().unwrap();
+        let r = FakeRunner::new();
+        assert!(matches!(check(&r, d.path(), "gh:x/y"), Check::Todo(_)));
+        assert!(r.calls().is_empty());
+        lock(d.path());
+        assert!(matches!(check(&r, d.path(), "rust"), Check::Done(_)));
+        assert!(r.calls().is_empty());
+    }
+
+    #[test]
+    fn apply_verifies_the_alternate_hull_forms_too() {
+        let d = tempfile::tempdir().unwrap();
+        let r = fake().on(&["git", "ls-remote"], Out::ok("bad\trefs/tags/v0.13.0\n"));
+        let Check::Failed(m) = apply(&r, d.path(), "gh:keelstackhq/hull.git//template") else {
+            panic!()
+        };
+        assert!(m.contains("moved"), "{m}");
         assert!(!lines(&r).iter().any(|l| l.contains(" new ")));
     }
 

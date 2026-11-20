@@ -94,7 +94,7 @@ impl Env {
         let pins = root.path().join("pins.toml");
         std::fs::write(
             &pins,
-            "[pins]\nsplice = \"0.6.0\"\nbosun = \"0.21.0\"\nhoist = \"0.5.1\"\nberth = \"0.2.1\"\nhull = \"v0.13.0\"\n",
+            "[pins]\nsplice = \"0.6.0\"\nbosun = \"0.21.0\"\nhoist = \"0.5.1\"\nberth = \"0.2.1\"\nhull = \"v0.13.0\"\n[refs.hull]\ntag = \"v0.13.0\"\nsha = \"3f4a65fda568cdd20c76168ed156d25a28ba5630\"\n",
         )
         .unwrap();
         Env {

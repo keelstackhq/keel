@@ -146,6 +146,22 @@ pub fn render_files(out: &serde_json::Value) -> Vec<String> {
     )
 }
 
+/// True for any form of the hull template source: `gh:keelstackhq/hull`, `https://github.com/
+/// keelstackhq/hull`, `git@github.com:keelstackhq/hull`, each with an optional `.git` and an
+/// optional `//subdir`. A longer repo name (`hullabaloo`) is not hull.
+pub fn is_hull_source(src: &str) -> bool {
+    let rest = ["gh:", "https://github.com/", "git@github.com:"]
+        .iter()
+        .find_map(|p| src.strip_prefix(p));
+    let Some(rest) = rest else { return false };
+    let repo = rest
+        .split("//")
+        .next()
+        .unwrap_or(rest)
+        .trim_end_matches('/');
+    repo.strip_suffix(".git").unwrap_or(repo) == "keelstackhq/hull"
+}
+
 pub const HULL_URL: &str = "https://github.com/keelstackhq/hull";
 
 /// For a hull source: the tag must still point at the pinned commit. `pinned` is the sha
@@ -319,6 +335,36 @@ mod tests {
         assert!(v(&r, None).unwrap_err().contains("KEEL_PINS"));
         assert!(v(&ls(Out::with(128, "", "no net")), Some("aaa")).is_err());
         assert!(v(&ls(Out::ok("")), Some("aaa")).is_err());
+    }
+
+    #[test]
+    fn hull_source_forms() {
+        for yes in [
+            "gh:keelstackhq/hull",
+            "gh:keelstackhq/hull.git",
+            "gh:keelstackhq/hull//template-rust",
+            "gh:keelstackhq/hull.git//template",
+            "https://github.com/keelstackhq/hull",
+            "https://github.com/keelstackhq/hull.git",
+            "https://github.com/keelstackhq/hull.git//template-rust",
+            "https://github.com/keelstackhq/hull/",
+            "git@github.com:keelstackhq/hull.git",
+            RUST_SOURCE,
+            TS_SOURCE,
+        ] {
+            assert!(is_hull_source(yes), "{yes}");
+        }
+        for no in [
+            "gh:keelstackhq/hullabaloo",
+            "gh:keelstackhq/hull-extra//x",
+            "gh:other/hull",
+            "https://github.com/other/keelstackhq/hull",
+            "https://example.com/keelstackhq/hull",
+            "rust",
+            "",
+        ] {
+            assert!(!is_hull_source(no), "{no}");
+        }
     }
 
     #[test]
