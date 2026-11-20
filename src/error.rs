@@ -25,7 +25,7 @@ impl KeelError {
 
     pub fn exit_code(&self) -> i32 {
         match self {
-            KeelError::Usage(_) => 2,
+            KeelError::Usage(_) | KeelError::Fix { .. } => 2,
             _ => 3,
         }
     }
@@ -48,6 +48,6 @@ mod tests {
             message: "m".into(),
             fix: "f".into(),
         };
-        assert_eq!(f.exit_code(), 3);
+        assert_eq!(f.exit_code(), 2);
     }
 }

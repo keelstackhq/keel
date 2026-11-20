@@ -255,7 +255,7 @@ fn plan_never_writes() {
 fn missing_repo_is_a_usage_error_with_fix() {
     let env = Env::new();
     let (code, out, _) = run(&env, "plan", &["--json".into(), "up".into()], "");
-    assert_eq!(code, 3);
+    assert_eq!(code, 2);
     let v = one_json(&out);
     assert_eq!(v["status"], "error");
     assert!(
