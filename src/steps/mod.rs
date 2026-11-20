@@ -86,6 +86,53 @@ pub(crate) fn repo(cx: &Ctx) -> Result<String, KeelError> {
     })
 }
 
+/// Every line of `hoist.toml` that keel's section generators write for this manifest: the
+/// `[cloudflare] account_id` line, the dns section and the r2 section. Blank lines are not
+/// listed (see [`only_keel_lines`]).
+pub(crate) fn hoist_lines(m: &crate::manifest::Manifest) -> Vec<String> {
+    use crate::manifest::{Dns, Provider};
+    let mut text = String::new();
+    if let Some(b) = &m.backup
+        && let Some(id) = &b.account_id
+    {
+        text.push_str(&format!(
+            "[cloudflare]\naccount_id = {}\n",
+            crate::tools::hoist::toml_str(id)
+        ));
+    }
+    if let Some(f) = m.fly() {
+        if f.dns == Dns::Cloudflare {
+            text.push_str(&dns::section_text(f));
+        }
+        if let Some(b) = &m.backup
+            && b.provider == Provider::R2
+        {
+            text.push_str(&backup::section_text(
+                &crate::manifest::Backup::bucket(&f.app),
+                b.retention_days,
+            ));
+        }
+    }
+    text.lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(String::from)
+        .collect()
+}
+
+/// Whether `git diff --unified=0` output of one file only adds lines keel writes (see
+/// [`hoist_lines`]) and removes none. Blank added lines are the separators keel adds.
+pub(crate) fn only_keel_lines(diff: &str, keel: &[String]) -> bool {
+    diff.lines()
+        .filter(|l| {
+            !(l.starts_with("+++") || l.starts_with("---") || l.starts_with("@@"))
+                && (l.starts_with('+') || l.starts_with('-'))
+        })
+        .all(|l| {
+            let (sign, rest) = l.split_at(1);
+            sign == "+" && (rest.trim().is_empty() || keel.iter().any(|k| k == rest.trim_end()))
+        })
+}
+
 /// The branch steps 3-9 work on (§5.1), without switching: the current branch unless it is the
 /// default branch or HEAD is detached; then the manifest's `branch`.
 pub(crate) fn work_branch(cx: &Ctx) -> Result<String, String> {

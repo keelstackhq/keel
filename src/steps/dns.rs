@@ -29,7 +29,7 @@ fn zone(f: &Fly) -> String {
 
 /// hoist resolves the targets itself (`targets = "fly"` reads the fly app's addresses), so the
 /// section carries no addresses.
-fn section_text(f: &Fly) -> String {
+pub(crate) fn section_text(f: &Fly) -> String {
     let no_mail = if f.no_mail { "no_mail = true\n" } else { "" };
     format!(
         "[{SECTION}]\nzone = {}\nhost = {}\ntargets = \"fly\"\nfly_app = {}\nproxied = false\n{no_mail}",

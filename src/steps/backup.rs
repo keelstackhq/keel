@@ -14,7 +14,7 @@ const SECTION: &str = "cloudflare.r2";
 /// and delivers R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET and R2_ENDPOINT to the fly app
 /// (`apply --secrets-to fly:APP`; keel does no name mapping). The key never passes through keel.
 /// The account id is not a key of this table (see [`account`]).
-fn section_text(bucket: &str, days: u32) -> String {
+pub(crate) fn section_text(bucket: &str, days: u32) -> String {
     format!(
         "[{SECTION}]\nbucket = {}\nretention_days = {days}\n",
         hoist::toml_str(bucket)
