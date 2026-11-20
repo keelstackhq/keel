@@ -10,11 +10,15 @@ fn convert(res: Res) -> Check {
     match res {
         Res::Ok => Check::Done("hoist check: no drift".into()),
         Res::Drift => Check::Todo("hoist check reports drift".into()),
-        Res::Human { title, url } => Check::Human(HumanStep {
+        Res::Human {
+            title,
+            url,
+            command,
+        } => Check::Human(HumanStep {
             id: "settings".into(),
             title,
             url,
-            command: "keel up".into(),
+            command,
         }),
         Res::Failed(e) => Check::Failed(e),
     }
@@ -103,5 +107,21 @@ mod tests {
             ("Install the hoist app", "https://github.com/apps/x")
         );
         assert_eq!(h.id, "settings");
+        assert_eq!(h.command, "keel up");
+    }
+
+    #[test]
+    fn variable_human_step_carries_the_gh_variable_set_command() {
+        let body = r#"{"ok":false,"exit_code":2,"items":[{"area":"github","kind":"variable","key":"OTHER","action":"pending","reason":"gh variable set OTHER --body 'x'"},{"area":"github","kind":"variable","key":"SPLICE_BOT","action":"pending","reason":"missing; run: gh variable set SPLICE_BOT --repo o/r --body 'v1' (then rerun) "}],"human_steps":[{"id":"variable:SPLICE_BOT","title":"Set SPLICE_BOT","url":"https://github.com/o/r/settings/variables/actions","status":"pending"}]}"#;
+        let r = FakeRunner::new().on(&["hoist", "--json", "apply"], Out::with(2, body, ""));
+        let Check::Human(h) = run(&r, true) else {
+            panic!()
+        };
+        assert_eq!(
+            h.command,
+            "gh variable set SPLICE_BOT --repo o/r --body 'v1' (then rerun)"
+        );
+        assert_eq!(h.title, "Set SPLICE_BOT");
+        assert_eq!(h.url, "https://github.com/o/r/settings/variables/actions");
     }
 }
