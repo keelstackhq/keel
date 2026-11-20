@@ -9,6 +9,8 @@ pub mod manifest;
 pub mod pins;
 pub mod report;
 pub mod step;
+pub mod steps;
+pub mod tools;
 
 pub use cli::{Cli, Command};
 pub use error::KeelError;
