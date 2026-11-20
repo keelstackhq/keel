@@ -168,10 +168,15 @@ impl Manifest {
                     )));
                 }
             }
-            if f.host.contains("://") || f.host.contains('/') {
-                return Err(manifest_err(
-                    "[deploy.fly] `host` is a bare hostname such as app.example.com (no scheme or path)",
-                ));
+            dns_name("host", &f.host)?;
+            if !valid_app(&f.app) {
+                return Err(manifest_err(format!(
+                    "[deploy.fly] `app` {:?} must be 1-63 characters of lowercase a-z, 0-9 and `-`",
+                    f.app
+                )));
+            }
+            if let Some(z) = &f.zone {
+                dns_name("zone", z)?;
             }
             if let Some(z) = &f.zone
                 && !(f.host == *z || f.host.ends_with(&format!(".{z}")))
@@ -190,6 +195,13 @@ impl Manifest {
             }
             if b.retention_days < 1 {
                 return Err(manifest_err("[backup] `retention_days` must be at least 1"));
+            }
+            if let Some(id) = &b.account_id
+                && !valid_account_id(id)
+            {
+                return Err(manifest_err(
+                    "[backup] `account_id` must be the 32-character lowercase hex Cloudflare account id",
+                ));
             }
             let bucket = Backup::bucket(&self.fly().expect("checked above").app);
             if b.provider == Provider::R2
@@ -300,6 +312,42 @@ impl Manifest {
     }
 }
 
+/// A fly app name: `^[a-z0-9-]+$`, at most 63 characters.
+pub fn valid_app(s: &str) -> bool {
+    (1..=63).contains(&s.len())
+        && s.bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+}
+
+/// A Cloudflare account id: `^[0-9a-f]{32}$`.
+pub fn valid_account_id(s: &str) -> bool {
+    s.len() == 32 && s.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// A DNS name for the manifest key `key`: lowercase labels of a-z, 0-9 and `-` (1-63 characters,
+/// not starting or ending with `-`) separated by single dots, at least two labels, at most 253
+/// characters in all.
+fn dns_name(key: &str, v: &str) -> Result<(), KeelError> {
+    let label_ok = |l: &str| {
+        (1..=63).contains(&l.len())
+            && !l.starts_with('-')
+            && !l.ends_with('-')
+            && l.bytes()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+    };
+    if v.len() <= 253 && v.split('.').count() >= 2 && v.split('.').all(label_ok) {
+        return Ok(());
+    }
+    let hint = if v.bytes().any(|c| c.is_ascii_uppercase()) {
+        " (use lowercase)"
+    } else {
+        ""
+    };
+    Err(manifest_err(format!(
+        "[deploy.fly] `{key}` {v:?} is not a DNS name: expected lowercase labels of a-z, 0-9 and `-` separated by dots, at least two, e.g. app.example.com (no scheme, path, port, `@`, `?` or `#`){hint}"
+    )))
+}
+
 /// `OWNER/NAME`: `^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$` and no `..`.
 pub fn validate_repo(repo: &str) -> Result<(), KeelError> {
     let ok = repo.split_once('/').is_some_and(|(owner, name)| {
@@ -390,25 +438,13 @@ mod tests {
         assert_eq!((b.provider, b.retention_days), (Provider::R2, 30));
         assert_eq!((f.no_mail, b.account_id.as_deref()), (false, None));
         let m2 = Manifest::parse(&format!(
-            "{FLY}no_mail = true\n[backup]\nprovider = \"r2\"\naccount_id = \"abc\"\n"
+            "{FLY}no_mail = true\n[backup]\nprovider = \"r2\"\naccount_id = \"0123456789abcdef0123456789abcdef\"\n"
         ))
         .unwrap();
         assert!(m2.fly().unwrap().no_mail);
-        assert_eq!(m2.backup.unwrap().account_id.as_deref(), Some("abc"));
-        // Uppercase app names are lowercased for the bucket; s3 has no bucket to name.
-        assert!(
-            Manifest::parse(&format!(
-                "{}[backup]\nprovider = \"r2\"\n",
-                FLY.replace("\"a\"", "\"My-App\"")
-            ))
-            .is_ok()
-        );
-        assert!(
-            Manifest::parse(&format!(
-                "{}[backup]\nprovider = \"s3\"\n",
-                FLY.replace("\"a\"", "\"my_app\"")
-            ))
-            .is_ok()
+        assert_eq!(
+            m2.backup.unwrap().account_id.as_deref(),
+            Some("0123456789abcdef0123456789abcdef")
         );
         let dir = tempfile::tempdir().unwrap();
         m.write(dir.path()).unwrap();
@@ -459,8 +495,61 @@ mod tests {
     }
 
     #[test]
+    fn host_zone_app_and_account_id_are_validated_shapes() {
+        let bad_names = [
+            "app.example.com@evil.io",
+            "app.example.com?x=1",
+            "app.example.com#x",
+            "app.example.com:443",
+            "app.example.com/x",
+            "app. example.com",
+            "App.example.com",
+            "app..example.com",
+            "-app.example.com",
+            "app-.example.com",
+            "app.example.com.",
+            "localhost",
+        ];
+        for h in bad_names {
+            let e = Manifest::parse(&FLY.replace("app.example.com", h)).unwrap_err();
+            assert_eq!(e.exit_code(), 3, "{h}");
+            assert!(e.to_string().contains("host"), "{h}: {e}");
+        }
+        assert!(Manifest::parse(&FLY.replace("app.example.com", "a\\\"b.example.com")).is_err());
+        let long = format!("{}.com", "a".repeat(64));
+        assert!(Manifest::parse(&FLY.replace("app.example.com", &long)).is_err());
+        let e = Manifest::parse(&FLY.replace("app.example.com", "App.example.com")).unwrap_err();
+        assert!(e.to_string().contains("lowercase"), "{e}");
+        for z in ["EXAMPLE.com", "example.com@x", "example com"] {
+            let e = Manifest::parse(&format!("{FLY}zone = {z:?}\n")).unwrap_err();
+            assert!(e.to_string().contains("zone"), "{z}: {e}");
+        }
+        for a in ["A", "a\"b", "a b", "a_b", "My-App"] {
+            let t = FLY.replace("app = \"a\"", &format!("app = {a:?}"));
+            let e = Manifest::parse(&t).unwrap_err();
+            assert!(e.to_string().contains("`app`"), "{a}: {e}");
+        }
+        assert!(
+            Manifest::parse(&FLY.replace("\"a\"", &format!("\"{}\"", "a".repeat(64)))).is_err()
+        );
+        for id in [
+            "abc",
+            "ABCDEF0123456789ABCDEF0123456789",
+            "\\\"x",
+            &"g".repeat(32),
+        ] {
+            let t = format!("{FLY}[backup]\nprovider = \"r2\"\naccount_id = {id:?}\n");
+            let e = Manifest::parse(&t).unwrap_err();
+            assert!(e.to_string().contains("account_id"), "{id}: {e}");
+        }
+        let id = "0123456789abcdef0123456789abcdef";
+        let t = format!("{FLY}[backup]\nprovider = \"r2\"\naccount_id = \"{id}\"\n");
+        assert!(Manifest::parse(&t).is_ok());
+    }
+
+    #[test]
     fn zone_is_the_host_or_a_parent_domain_at_a_label_boundary() {
-        for ok in ["app.example.com", "example.com", "com"] {
+        for ok in ["app.example.com", "example.com"] {
             let m = Manifest::parse(&format!("{FLY}zone = \"{ok}\"\n")).unwrap();
             assert_eq!(m.fly().unwrap().zone.as_deref(), Some(ok));
         }

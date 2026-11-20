@@ -202,6 +202,12 @@ fn apply_res(c: &Cmd, o: &Out) -> Res {
 
 pub const FILE: &str = "hoist.toml";
 
+/// A TOML basic string for `s` (quoted and escaped). The one way keel writes a value into
+/// `hoist.toml`.
+pub fn toml_str(s: &str) -> String {
+    toml::Value::String(s.to_string()).to_string()
+}
+
 /// Whether `hoist.toml` already has the `[header]` table.
 pub fn has_section(dir: &Path, header: &str) -> bool {
     std::fs::read_to_string(dir.join(FILE))
@@ -238,7 +244,7 @@ pub fn ensure_account_id(dir: &Path, id: &str) -> Result<(), String> {
     let path = dir.join(FILE);
     let have = std::fs::read_to_string(&path).unwrap_or_default();
     let lines: Vec<&str> = have.lines().collect();
-    let line = format!("account_id = \"{id}\"");
+    let line = format!("account_id = {}", toml_str(id));
     match cloudflare_table(&lines) {
         None => append_section(dir, &format!("[cloudflare]\n{line}\n")),
         Some((h, e)) if !lines[h + 1..e].iter().any(|l| is_account_id(l)) => {
@@ -401,6 +407,15 @@ mod tests {
         // An account_id in a sub-table is not the top-level one.
         std::fs::write(d.path().join(FILE), "[cloudflare.r2]\naccount_id = \"x\"\n").unwrap();
         assert!(!has_account_id(d.path()));
+    }
+
+    #[test]
+    fn toml_str_escapes_quotes_backslashes_and_newlines() {
+        assert_eq!(toml_str("a"), "\"a\"");
+        let v = "x\"\nbad = 1\\";
+        let t = format!("k = {}\n", toml_str(v));
+        let parsed: toml::Table = toml::from_str(&t).unwrap();
+        assert_eq!(parsed["k"].as_str(), Some(v));
     }
 
     #[test]

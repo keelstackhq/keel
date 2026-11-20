@@ -70,13 +70,14 @@ region = "fra"
 host = "app.example.com"          # no scheme
 dns = "cloudflare"                # or "none" (default)
 zone = "example.com"              # optional; HOST or a parent domain. Default: last two labels
+                                  # host, zone, app are checked: lowercase DNS names / [a-z0-9-]+
                                   # of host (set it for hosts such as app.example.co.uk)
 no_mail = false                   # true: also SPF and DMARC records for the host
 
 [backup]                          # optional; needs [deploy.fly]
 provider = "r2"                   # or "s3" (not automated)
 retention_days = 30
-account_id = "..."                # optional; env CLOUDFLARE_ACCOUNT_ID wins (not a secret)
+account_id = "..."                # optional; 32 lowercase hex chars; env CLOUDFLARE_ACCOUNT_ID wins (not a secret, same rule)
 ```
 
 Unknown keys are an error. keel never reads or prints `CLOUDFLARE_API_TOKEN` or a Fly token: it

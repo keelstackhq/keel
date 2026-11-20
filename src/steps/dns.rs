@@ -32,10 +32,10 @@ fn zone(f: &Fly) -> String {
 fn section_text(f: &Fly) -> String {
     let no_mail = if f.no_mail { "no_mail = true\n" } else { "" };
     format!(
-        "[{SECTION}]\nzone = \"{}\"\nhost = \"{}\"\ntargets = \"fly\"\nfly_app = \"{}\"\nproxied = false\n{no_mail}",
-        zone(f),
-        f.host,
-        f.app
+        "[{SECTION}]\nzone = {}\nhost = {}\ntargets = \"fly\"\nfly_app = {}\nproxied = false\n{no_mail}",
+        hoist::toml_str(&zone(f)),
+        hoist::toml_str(&f.host),
+        hoist::toml_str(&f.app)
     )
 }
 

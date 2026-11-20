@@ -442,7 +442,7 @@ fn cloudflare_dns_and_backup_use_the_area_flag_and_the_fly_sink() {
     let env = Env::new();
     fly_repo(&env);
     let manifest = format!(
-        "{FLY_MANIFEST}dns = \"cloudflare\"\n[backup]\nprovider = \"r2\"\naccount_id = \"acc123\"\n"
+        "{FLY_MANIFEST}dns = \"cloudflare\"\n[backup]\nprovider = \"r2\"\naccount_id = \"0123456789abcdef0123456789abcdef\"\n"
     );
     std::fs::write(env.repo.join("keel.toml"), manifest).unwrap();
     let mut cmd = env.keel("deploy", &["--json", "up"]);
@@ -475,7 +475,8 @@ fn cloudflare_dns_and_backup_use_the_area_flag_and_the_fly_sink() {
         "{t}"
     );
     assert!(
-        t.contains("[cloudflare.r2]") && t.contains("account_id = \"acc123\""),
+        t.contains("[cloudflare.r2]")
+            && t.contains("account_id = \"0123456789abcdef0123456789abcdef\""),
         "{t}"
     );
 }

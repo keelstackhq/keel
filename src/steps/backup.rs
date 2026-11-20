@@ -15,7 +15,10 @@ const SECTION: &str = "cloudflare.r2";
 /// (`apply --secrets-to fly:APP`; keel does no name mapping). The key never passes through keel.
 /// The account id is not a key of this table (see [`account`]).
 fn section_text(bucket: &str, days: u32) -> String {
-    format!("[{SECTION}]\nbucket = \"{bucket}\"\nretention_days = {days}\n")
+    format!(
+        "[{SECTION}]\nbucket = {}\nretention_days = {days}\n",
+        hoist::toml_str(bucket)
+    )
 }
 
 enum Account {
@@ -29,7 +32,12 @@ enum Account {
 /// `[cloudflare]`), else the `[cloudflare] account_id` already in `hoist.toml`; else the human step.
 fn account(cx: &Ctx, b: &B) -> Result<Account, Check> {
     let set = |v: &Option<String>| v.clone().filter(|v| !v.trim().is_empty());
-    if set(&cx.opts.cloudflare_account_id).is_some() {
+    if let Some(id) = set(&cx.opts.cloudflare_account_id) {
+        if !crate::manifest::valid_account_id(&id) {
+            return Err(Check::Failed(
+                "env CLOUDFLARE_ACCOUNT_ID must be the 32-character lowercase hex Cloudflare account id: fix or unset it".into(),
+            ));
+        }
         return Ok(Account::Have);
     }
     if let Some(id) = set(&b.account_id) {
@@ -124,12 +132,14 @@ mod tests {
     use crate::exec::{FakeRunner, Out};
     use crate::manifest::{Backup as B, Manifest};
 
+    const ACC: &str = "0123456789abcdef0123456789abcdef";
+
     fn with_backup(p: Provider) -> Manifest {
         let mut m = fly_manifest();
         m.backup = Some(B {
             provider: p,
             retention_days: 14,
-            account_id: Some("acc123".into()),
+            account_id: Some(ACC.into()),
         });
         m
     }
@@ -223,7 +233,9 @@ mod tests {
         let t = std::fs::read_to_string(d.path().join("hoist.toml")).unwrap();
         assert_eq!(
             t,
-            "[cloudflare]\naccount_id = \"acc123\"\n\n[cloudflare.r2]\nbucket = \"app-backup\"\nretention_days = 14\n"
+            format!(
+                "[cloudflare]\naccount_id = \"{ACC}\"\n\n[cloudflare.r2]\nbucket = \"app-backup\"\nretention_days = 14\n"
+            )
         );
         assert_eq!(
             r.calls()[0].line(),
@@ -275,7 +287,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let opts = Opts {
             cloudflare_token: true,
-            cloudflare_account_id: Some("envacc".into()),
+            cloudflare_account_id: Some(ACC.into()),
             ..Opts::default()
         };
         let r = FakeRunner::new().on(&["hoist"], Out::ok(r#"{"ok":true,"items":[]}"#));
@@ -294,6 +306,39 @@ mod tests {
         .unwrap();
         let r = FakeRunner::new().on(&["hoist"], Out::ok(r#"{"ok":true,"items":[]}"#));
         assert!(matches!(run(&r, d.path(), m2, true, true), Check::Done(_)));
+    }
+
+    #[test]
+    fn a_malformed_env_account_id_fails_naming_the_variable() {
+        for apply in [false, true] {
+            let d = tempfile::tempdir().unwrap();
+            let r = FakeRunner::new();
+            let opts = Opts {
+                cloudflare_token: true,
+                cloudflare_account_id: Some("a\"b".into()),
+                ..Opts::default()
+            };
+            let mut cx = ctx(
+                &r,
+                d.path().into(),
+                with_backup(Provider::R2),
+                PINS,
+                opts,
+                &no_sleep,
+                &no_stdin,
+            );
+            let c = if apply {
+                Backup.apply(&mut cx)
+            } else {
+                Backup.check(&mut cx)
+            }
+            .unwrap();
+            assert!(
+                matches!(&c, Check::Failed(m) if m.contains("CLOUDFLARE_ACCOUNT_ID")),
+                "{c:?}"
+            );
+            assert!(r.calls().is_empty() && !d.path().join("hoist.toml").exists());
+        }
     }
 
     #[test]
