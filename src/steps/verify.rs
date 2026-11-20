@@ -100,7 +100,10 @@ impl Step for Verify {
         }
         v.healthz = Healthz::Ok;
         // (c) the project's own smoke test.
-        if cx.dir.join(SMOKE).is_file() {
+        if cx.opts.dry_run {
+            // `plan` writes and runs nothing of the project's.
+            v.smoke = Smoke::NotRun;
+        } else if cx.dir.join(SMOKE).is_file() {
             let mut c = Cmd::new(SMOKE, &[]).dir(&cx.dir);
             c.env.push(("SMOKE_URL".into(), url.clone()));
             let o = cx.runner.run(&c);
@@ -115,6 +118,8 @@ impl Step for Verify {
         }
         let smoke = if v.smoke == Smoke::Passed {
             "smoke passed"
+        } else if v.smoke == Smoke::NotRun {
+            "smoke not run in plan"
         } else {
             "no smoke script"
         };
@@ -239,6 +244,34 @@ mod tests {
         let (c, v, _) = go(&r, d.path(), 0);
         assert!(matches!(c, Check::Failed(m) if m.contains("boom")));
         assert_eq!(v.unwrap().smoke, Smoke::Failed);
+    }
+
+    #[test]
+    fn plan_never_runs_the_smoke_script() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir(d.path().join("scripts")).unwrap();
+        std::fs::write(d.path().join(SMOKE), "").unwrap();
+        let r = base()
+            .on(&["gh", "run", "list"], runs(OK_RUN))
+            .on(&["curl"], Out::ok("200"))
+            .on(&["scripts/smoke.sh"], Out::with(1, "", "must not run"));
+        let opts = Opts {
+            dry_run: true,
+            ..Opts::default()
+        };
+        let mut cx = ctx(
+            &r,
+            d.path().into(),
+            fly_manifest(),
+            PINS,
+            opts,
+            &no_sleep,
+            &no_stdin,
+        );
+        let c = Verify.check(&mut cx).unwrap();
+        assert!(matches!(c, Check::Done(_)), "{c:?}");
+        assert_eq!(cx.verify.unwrap().smoke, Smoke::NotRun);
+        assert!(r.calls().iter().all(|c| c.program != SMOKE));
     }
 
     #[test]

@@ -44,7 +44,7 @@ Global flags: `-C DIR` (checkout, default `.`), `--json`, `-v`. `up` and `plan` 
 | 10 | backup | `[backup]`: R2 bucket with a lifecycle rule and a scoped key delivered to the fly app by hoist (`provider = "r2"`); `keel up --confirm backup` records a bucket made by hand |
 | 11 | doctor | `bosun doctor --remote`, push the branch, open the PR |
 | 12 | merge | a human approves and merges the PR (human gate) |
-| 13 | verify | after the merge: the deploy workflow succeeded, `https://HOST/healthz` answers 200, `scripts/smoke.sh` passes. Prints a `verify` object in `--json` |
+| 13 | verify | after the merge: the deploy workflow succeeded, `https://HOST/healthz` answers 200, `scripts/smoke.sh` passes (`keel plan` does not run it). Prints a `verify` object in `--json` |
 
 The deploy, dns, backup and verify steps do nothing without `[deploy.fly]` / `[backup]` in `keel.toml`.
 
