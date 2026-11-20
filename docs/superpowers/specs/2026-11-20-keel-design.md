@@ -9,6 +9,9 @@ The keelstackhq tools (splice, bosun, hoist, berth, hull templates) work well on
 sets them up together, so the owner becomes the glue. A recent bootstrap of a client repo took 4
 owner round-trips, 10+ commands from 3 CLIs and a hand-written `gh` script.
 
+keel configures an existing repo. The org provisioner app (`keelstackhq/provision`, D-014) creates
+repos and org settings; keel never creates a repo or touches org settings.
+
 keel is a thin orchestrator. `keel up` reads one manifest, runs each tool as a subprocess, reads
 its JSON, and stops at the first step only a human can do. keel never reimplements a tool.
 
@@ -113,7 +116,7 @@ every `check` only and marks work `would-run`; it stops after the first human ga
 
 | # | id | check (read-only) | apply |
 |---|----|-------------------|-------|
-| 1 | `preflight` | `node --version` ≥ 24, `gh auth status`, `gh api user` (login), `git --version`; repo exists (`gh repo view`); `-C` is a git checkout whose `origin` is the repo; each tool's `--version` equals its pin | install each tool not at its pin (§6) |
+| 1 | `preflight` | `node --version` ≥ 24, `gh auth status`, `gh api user` (login), `git --version`; repo exists (`gh repo view`; if not, a human step: request the repo from the provisioner, never `gh repo create`); `-C` is a git checkout whose `origin` is the repo; each tool's `--version` equals its pin | install each tool not at its pin (§6) |
 | 2 | `apps` | Claude and Renovate apps installed on the repo (`gh api user/installations`, then the installation's repositories when `repository_selection` is `selected`) | none: human gate; prints the install link and polls up to `--wait` |
 | 3 | `render` | `.splice/lock.toml` exists and `Cargo.lock` exists when `Cargo.toml` does | branch (§5.1, switched before any commit); commit `keel.toml` alone (splice refuses a dirty tree); `splice pieces --json` validates piece names; `splice --json --yes new <source> . --ref <template_ref> --force --piece …` (rust: `--data no_placeholder=true`); `cargo generate-lockfile` when needed; ensure `.keel/` is in `.gitignore`; commit only the render's files (`changes[].path` of the `splice new --json` output whose action is not `skip`, plus `.splice/lock.toml`) and what keel itself wrote (`.gitignore`, `Cargo.lock`); a lockfile-only re-run commits just `Cargo.lock` |
 | 4 | `governance` | `.bosun/version` exists; with `plan`, `bosun plan import FILE --dry-run` has no `data.epics[]`/`data.tasks[]` item with `action: "would-create"` | `bosun init --owner <gh login> --branch <work branch> --no-pr` (+ `--stack rust` for the rust template); labels fallback (§10); then `bosun plan import FILE` |
@@ -176,7 +179,9 @@ Link (fine-grained PAT, prefilled):
 `https://github.com/settings/personal-access-tokens/new?name=keel%20OWNER%2FNAME&description=…&target_name=OWNER&expires_in=90&contents=write&pull_requests=write&workflows=write`
 (Contents, Pull requests, Workflows: read and write; repository access: only the repo).
 Command: `keel up --token-stdin` (paste, then Enter). keel stores it with
-`gh secret set NAME --env ENV --repo R` reading the value on stdin.
+`gh secret set NAME --env ENV --repo R` reading the value on stdin. D-010 covers repo secrets
+through hoist; this one environment secret is the exception, set by `gh secret set` (stdin) because
+the PAT must never reach hoist's argv, files or logs.
 
 ## 8. Agent environment
 
@@ -204,7 +209,11 @@ exit_code:3, status:"error", steps:[], human_step:null, error:{message, fix}}`.
 
 Answered: pins (§6, hull#132 `pins.toml`), PAT secret `SPLICE_BOT_TOKEN` in `splice-bot`, proxy-CA
 hook (§8, `scripts/proxy-ca.sh install`), labels: `bosun init` creates labels and owners from the
-gh user; when its JSON has no `data.labels`, keel falls back to `gh label create … --force`. The
+gh user; keel prefers the labels bosun reports (`data.labels_created`, or `data.labels`) and creates the
+others from a hard-coded fallback list with `gh label create … --force` (with `--no-pr` bosun
+reports none). bosun 0.21.0 has no `labels` command; a unit test pins the list to
+`registry::LABEL`, `bosun:halt` and `State::ALL`, and an ignored test (`KEEL_BOSUN_SRC=<bosun
+checkout> cargo test -- --ignored bosun_source`) checks it against bosun's source. The
 rust template gets `--data no_placeholder=true` (skips `crates/common`). Answered from the sources:
 
 - `bosun plan import --dry-run` JSON (was Q3): `data.epics[]` and `data.tasks[]`, each with an

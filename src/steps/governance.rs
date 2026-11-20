@@ -77,12 +77,10 @@ impl Step for Governance {
             let c = bosun::init_cmd(&cx.dir, &owner, &branch, rust);
             match bosun::run(r, &c, &bosun_pin) {
                 Res::Ok(data) => {
-                    // With --no-pr bosun makes no labels: create them ourselves.
-                    if data.get("labels").is_none() {
-                        for name in bosun::LABELS {
-                            if let Err(e) = gh::label_create(r, &repo, name) {
-                                return Ok(Check::Failed(e));
-                            }
+                    // Prefer the labels bosun reports; create the fallback ones it did not.
+                    for name in bosun::missing_labels(&data) {
+                        if let Err(e) = gh::label_create(r, &repo, name) {
+                            return Ok(Check::Failed(e));
                         }
                     }
                 }
@@ -206,7 +204,7 @@ mod tests {
     }
 
     #[test]
-    fn labels_fallback_when_init_reports_none_and_skipped_when_present() {
+    fn labels_fallback_only_for_what_init_did_not_report() {
         let d = tempfile::tempdir().unwrap();
         let r = fake();
         let _ = apply(&r, d.path(), "rust", None);
@@ -218,12 +216,30 @@ mod tests {
             12
         );
         assert!(l.contains(&"gh label create bosun:halt --repo owner/name --force".into()));
+        // bosun reports every label (`labels_created`): none is created here.
+        let all = serde_json::to_string(&bosun::LABELS).unwrap();
+        let r = fake().on(
+            &["bosun", "--json", "init"],
+            Out::ok(&format!(
+                r#"{{"ok":true,"data":{{"labels_created":{all}}}}}"#
+            )),
+        );
+        let _ = apply(&r, d.path(), "rust", None);
+        assert!(!lines(&r).iter().any(|x| x.starts_with("gh label")));
+        // `labels` works too; a partial list leaves the rest to the fallback.
         let r = fake().on(
             &["bosun", "--json", "init"],
             Out::ok(r#"{"ok":true,"data":{"labels":["bosun:halt"]}}"#),
         );
         let _ = apply(&r, d.path(), "rust", None);
-        assert!(!lines(&r).iter().any(|x| x.starts_with("gh label")));
+        let l = lines(&r);
+        assert_eq!(
+            l.iter()
+                .filter(|x| x.starts_with("gh label create"))
+                .count(),
+            11
+        );
+        assert!(!l.contains(&"gh label create bosun:halt --repo owner/name --force".into()));
     }
 
     #[test]

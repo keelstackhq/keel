@@ -96,9 +96,15 @@ impl Step for Preflight {
             return Ok(Check::Failed("git not found; install git".into()));
         };
         if let Err(e) = gh::default_branch(r, &repo) {
-            return Ok(Check::Failed(format!(
-                "repo {repo} is not reachable ({e}); create it or check the name and your access"
-            )));
+            // keel configures an existing repo; the org provisioner app creates it (D-014).
+            return Ok(Check::Human(HumanStep {
+                id: self.id().into(),
+                title: format!(
+                    "Request {repo} from the org provisioner (keelstackhq/provision), or check the name and your access ({e})"
+                ),
+                url: "https://github.com/keelstackhq/provision".into(),
+                command: "keel up".into(),
+            }));
         }
         if !git::is_work_tree(r, &cx.dir) {
             return Ok(Check::Failed(format!(
@@ -252,6 +258,18 @@ mod tests {
             panic!()
         };
         assert_eq!(h.command, "gh auth login");
+    }
+
+    #[test]
+    fn missing_repo_is_a_human_step_to_ask_the_provisioner_never_gh_repo_create() {
+        let r = healthy().on(&["gh", "repo", "view"], Out::with(1, "", "Not Found"));
+        let Check::Human(h) = run_check(&r, PINS) else {
+            panic!()
+        };
+        assert!(h.title.contains("provision"), "{}", h.title);
+        assert!(!h.title.contains("gh repo create") && !h.command.contains("repo create"));
+        assert_eq!(h.url, "https://github.com/keelstackhq/provision");
+        assert!(!r.calls().iter().any(|c| c.line().contains("repo create")));
     }
 
     #[test]

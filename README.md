@@ -1,9 +1,13 @@
 # keel
 
-keel sets up a repo across the keelstackhq tools in one command. It reads one manifest
+keel sets up an existing repo across the keelstackhq tools in one command. It reads one manifest
 (`keel.toml`), runs splice, bosun and hoist as subprocesses, reads their JSON, and stops at the
 first step only a human can do, then tells you exactly what that step is. It is idempotent: each
 step checks first, so a re-run resumes where the last one stopped.
+
+keel configures a repo that the org provisioner app (`keelstackhq/provision`) already created. It
+never creates repos or org settings; if the repo is missing, the human step says to request it
+from the provisioner.
 
 ## Install
 
@@ -77,7 +81,7 @@ environment or API error · 5 a human step is pending. `keel --json --help` prin
 ## Security: the PAT
 
 Pass the token with `keel up --token-stdin` (paste, then Enter). keel gives it to
-`gh secret set` on stdin only. It never appears in argv, files, logs, stdout, stderr or JSON, and
+`gh secret set` (the one environment secret keel sets; repo secrets go through hoist) on stdin only. It never appears in argv, files, logs, stdout, stderr or JSON, and
 it is zeroized after use. keel has no HTTP client; `gh` talks to GitHub.
 
 ## License

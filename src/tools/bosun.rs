@@ -3,10 +3,11 @@ use crate::exec::{Cmd, Out, Runner};
 use serde_json::Value;
 use std::path::Path;
 
-/// The labels bosun needs, for the fallback when `bosun init` reports no `data.labels`.
-/// Source: bosun `src/cli/adopt.rs` `labels_wanted()`: `bosun:halt`, `registry::LABEL`
-/// (`src/registry.rs`: `bosun:registry`) and every `State::ALL` label
-/// (`src/core/state.rs`: `bosun:state/<name>`).
+/// The labels bosun needs: the fallback for what `bosun init` did not report in
+/// `data.labels_created` / `data.labels`. bosun has no `labels` command (0.21.0), so the list is
+/// pinned by a test (below) to bosun 0.21.0: `src/cli/adopt.rs` `labels_wanted()` =
+/// `bosun:halt`, `registry::LABEL` (`src/registry.rs`: `bosun:registry`) and every `State::ALL`
+/// label (`src/core/state.rs`: `bosun:state/<name>`). Bump it with the bosun pin.
 pub const LABELS: [&str; 12] = [
     "bosun:halt",
     "bosun:registry",
@@ -21,6 +22,22 @@ pub const LABELS: [&str; 12] = [
     "bosun:state/blocked",
     "bosun:state/needs-human",
 ];
+
+/// The fallback labels `bosun init` did not report (`data.labels_created`, or `data.labels`).
+/// With `--no-pr` bosun reports an empty list, so all of them are missing then.
+pub fn missing_labels(data: &Value) -> Vec<&'static str> {
+    let reported: Vec<&str> = ["labels_created", "labels"]
+        .iter()
+        .filter_map(|k| data.get(*k).and_then(Value::as_array))
+        .flatten()
+        .filter_map(|v| v.as_str().or_else(|| v["name"].as_str()))
+        .collect();
+    LABELS
+        .iter()
+        .copied()
+        .filter(|l| !reported.contains(l))
+        .collect()
+}
 
 pub enum Res {
     /// Exit 0 with a JSON envelope: its `data`.
@@ -270,5 +287,83 @@ mod tests {
             ),
         );
         assert_eq!(doctor(&r, Path::new(".")).unwrap(), Doctor::Offline);
+    }
+
+    use serde_json::json;
+
+    #[test]
+    fn reported_labels_are_not_recreated() {
+        assert_eq!(missing_labels(&json!({})).len(), 12);
+        assert_eq!(missing_labels(&json!({"labels_created": []})).len(), 12);
+        let all: Vec<&str> = LABELS.to_vec();
+        assert!(missing_labels(&json!({"labels_created": all})).is_empty());
+        assert!(missing_labels(&json!({"labels": all})).is_empty());
+        let m = missing_labels(&json!({"labels_created": ["bosun:halt"]}));
+        assert_eq!(m.len(), 11);
+        assert!(!m.contains(&"bosun:halt"));
+    }
+
+    /// bosun 0.21.0: `registry::LABEL` (src/registry.rs), `State::ALL` names (src/core/state.rs)
+    /// and `bosun:halt` (src/cli/adopt.rs `labels_wanted()`). bosun has no `labels` command to
+    /// ask, so this list is pinned; the ignored test below checks it against a bosun checkout.
+    fn pinned_0_21_0() -> Vec<String> {
+        let mut v = vec!["bosun:halt".to_string(), "bosun:registry".to_string()];
+        for n in [
+            "planned",
+            "ready",
+            "claimed",
+            "building",
+            "review",
+            "fixing",
+            "queued",
+            "merged",
+            "blocked",
+            "needs-human",
+        ] {
+            v.push(format!("bosun:state/{n}"));
+        }
+        v
+    }
+
+    #[test]
+    fn fallback_labels_equal_the_bosun_0_21_0_list() {
+        assert_eq!(LABELS.to_vec(), pinned_0_21_0());
+    }
+
+    /// `KEEL_BOSUN_SRC=/path/to/bosun cargo test -- --ignored bosun_source`
+    #[test]
+    #[ignore = "needs KEEL_BOSUN_SRC=<bosun checkout>"]
+    fn fallback_labels_equal_the_bosun_source() {
+        let root = std::env::var("KEEL_BOSUN_SRC").expect("set KEEL_BOSUN_SRC to a bosun checkout");
+        let read = |f: &str| {
+            std::fs::read_to_string(std::path::Path::new(&root).join(f))
+                .unwrap_or_else(|e| panic!("{f}: {e}"))
+        };
+        let registry = read("src/registry.rs");
+        let registry_label = registry
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("pub const LABEL: &str = \""))
+            .and_then(|l| l.split('"').next())
+            .expect("registry::LABEL");
+        let state = read("src/core/state.rs");
+        let prefix = state
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("pub const STATE_PREFIX: &str = \""))
+            .and_then(|l| l.split('"').next())
+            .expect("STATE_PREFIX");
+        // `fn name`: `State::X => "name",` arms, in State::ALL order.
+        let name_fn = state
+            .split("pub fn name(self)")
+            .nth(1)
+            .expect("State::name");
+        let body = &name_fn[..name_fn.find("\n    }\n").expect("end of name()")];
+        let names: Vec<&str> = body
+            .lines()
+            .filter_map(|l| l.split("=> \"").nth(1))
+            .filter_map(|l| l.split('"').next())
+            .collect();
+        let mut want = vec!["bosun:halt".to_string(), registry_label.to_string()];
+        want.extend(names.iter().map(|n| format!("{prefix}{n}")));
+        assert_eq!(LABELS.to_vec(), want);
     }
 }
