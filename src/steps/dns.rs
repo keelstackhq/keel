@@ -2,6 +2,7 @@ use super::{cloudflare_token_step, hoist_check};
 use crate::ctx::Ctx;
 use crate::error::KeelError;
 use crate::manifest::{Dns as Provider, Fly};
+use crate::report::HumanStep;
 use crate::step::{Check, Step};
 use crate::tools::fly::{self, Ips};
 use crate::tools::hoist;
@@ -127,7 +128,23 @@ impl Step for Dns {
         }
         let res = hoist::apply_cloudflare(cx.runner, &cx.dir, &f.app);
         match hoist_check(res, self.id(), SECTION, "applied") {
-            Check::Done(_) => self.check(cx),
+            // keel never passes `--prune`: a record still in drift after apply is a stray
+            // A/AAAA record hoist will not delete on its own.
+            Check::Done(_) => Ok(match self.check(cx)? {
+                Check::Todo(_) => Check::Human(HumanStep {
+                    id: self.id().into(),
+                    title: format!(
+                        "Remove the old A/AAAA records for {} in Cloudflare, or rerun with `hoist apply --prune`",
+                        f.host
+                    ),
+                    url: "https://dash.cloudflare.com/".into(),
+                    command: format!(
+                        "hoist --json apply --yes --area cloudflare --prune --secrets-to fly:{}   # then keel up",
+                        f.app
+                    ),
+                }),
+                other => other,
+            }),
             other => Ok(other),
         }
     }
@@ -323,6 +340,28 @@ mod tests {
                 "hoist --json apply --yes --area cloudflare --secrets-to fly:app",
                 "hoist --json check --area cloudflare"
             ]
+        );
+    }
+
+    #[test]
+    fn stray_records_left_after_apply_are_a_human_step_never_prune() {
+        let d = tempfile::tempdir().unwrap();
+        let drift = r#"{"ok":false,"items":[{"kind":"dns_record","key":"app.example.com A 5.6.7.8","action":"drift"}],"human_steps":[]}"#;
+        let r = FakeRunner::new()
+            .on(
+                &["hoist", "--json", "apply"],
+                Out::ok(r#"{"ok":true,"items":[]}"#),
+            )
+            .on(&["hoist", "--json", "check"], Out::with(1, drift, ""));
+        let Check::Human(h) = run(&r, d.path(), cf_manifest(), true, true) else {
+            panic!("want a human step")
+        };
+        assert_eq!(h.id, "dns");
+        assert!(h.title.contains("app.example.com"), "{}", h.title);
+        assert!(h.title.contains("--prune"), "{}", h.title);
+        assert!(
+            !r.calls().iter().any(|c| c.line().contains("--prune")),
+            "keel never passes --prune"
         );
     }
 
