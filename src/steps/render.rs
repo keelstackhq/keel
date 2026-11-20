@@ -176,13 +176,21 @@ impl Step for Render {
             // Lockfile-only: commit just what keel changed, never the rest of the worktree.
             // A crashed earlier run may have written both files without committing them, so
             // commit whatever is dirty (`commit_path` is a no-op for a clean path).
+            // A tracked `Cargo.lock` or `.gitignore` may hold the user's own edits: commit
+            // them only when keel changed them now or they are not tracked yet (a crashed run).
             let mut res = Ok(());
+            let toml = cx.dir.join("Cargo.toml").is_file();
             if lockfile
-                || (cx.dir.join("Cargo.toml").is_file() && cx.dir.join("Cargo.lock").is_file())
+                || (toml
+                    && cx.dir.join("Cargo.lock").is_file()
+                    && !git::is_tracked(r, &cx.dir, "Cargo.lock"))
             {
                 res = git::commit_path(r, &cx.dir, "Cargo.lock", "keel: add Cargo.lock");
             }
-            if res.is_ok() && cx.dir.join(".gitignore").is_file() {
+            if res.is_ok()
+                && cx.dir.join(".gitignore").is_file()
+                && (ignored || !git::is_tracked(r, &cx.dir, ".gitignore"))
+            {
                 res = git::commit_path(r, &cx.dir, ".gitignore", "keel: ignore .keel");
             }
             res
@@ -595,6 +603,43 @@ mod tests {
             );
         }
         assert!(!l.iter().any(|x| x.contains(" -A")), "{l:?}");
+    }
+
+    #[test]
+    fn resume_leaves_tracked_user_edits_to_cargo_lock_and_gitignore_alone() {
+        let d = tempfile::tempdir().unwrap();
+        lock(d.path());
+        std::fs::create_dir(d.path().join(".keel")).unwrap();
+        std::fs::write(d.path().join(LIST), "src/main.rs\n").unwrap();
+        std::fs::write(d.path().join("Cargo.toml"), "").unwrap();
+        std::fs::write(d.path().join("Cargo.lock"), "user edit").unwrap();
+        // `.keel/` is already ignored, so keel changes nothing in .gitignore.
+        std::fs::write(d.path().join(".gitignore"), "target\n.keel/\nmine\n").unwrap();
+        let r = fake().on(&["git", "ls-files", "--error-unmatch"], Out::ok(""));
+        let _ = apply(&r, d.path(), "rust");
+        let l = lines(&r);
+        for p in ["Cargo.lock", ".gitignore"] {
+            assert!(
+                !l.iter().any(|x| x.starts_with("git add") && x.contains(p)),
+                "{p}: {l:?}"
+            );
+        }
+        // When keel itself appends `.keel/`, the tracked .gitignore is committed.
+        std::fs::write(d.path().join(".gitignore"), "target\n").unwrap();
+        std::fs::write(d.path().join(LIST), "src/main.rs\n").unwrap();
+        let r = fake().on(&["git", "ls-files", "--error-unmatch"], Out::ok(""));
+        let _ = apply(&r, d.path(), "rust");
+        let l = lines(&r);
+        assert!(
+            l.iter()
+                .any(|x| x.starts_with("git commit") && x.ends_with("-- .gitignore")),
+            "{l:?}"
+        );
+        assert!(
+            !l.iter()
+                .any(|x| x.starts_with("git add") && x.ends_with("Cargo.lock")),
+            "{l:?}"
+        );
     }
 
     #[test]
