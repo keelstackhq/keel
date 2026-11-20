@@ -124,6 +124,7 @@ pub(crate) mod tests {
                     region: "fra".into(),
                     host: "app.example.com".into(),
                     dns: Default::default(),
+                    zone: None,
                 }),
             }),
             ..manifest("rust")

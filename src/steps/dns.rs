@@ -1,7 +1,7 @@
 use super::{cloudflare_token_step, hoist_check};
 use crate::ctx::Ctx;
 use crate::error::KeelError;
-use crate::manifest::Dns as Provider;
+use crate::manifest::{Dns as Provider, Fly};
 use crate::step::{Check, Step};
 use crate::tools::fly::{self, Ips};
 use crate::tools::hoist;
@@ -17,13 +17,17 @@ fn records(ips: &Ips) -> Vec<(&'static str, String)> {
     a.chain(aaaa).collect()
 }
 
-/// The registrable part of a host: its last two labels.
-fn zone(host: &str) -> String {
-    let labels: Vec<&str> = host.split('.').collect();
-    labels[labels.len().saturating_sub(2)..].join(".")
+/// The zone of the host: the manifest's `zone`, else the last two labels of the host (wrong for
+/// public suffixes such as `co.uk`: set `zone`).
+fn zone(f: &Fly) -> String {
+    f.zone.clone().unwrap_or_else(|| {
+        let labels: Vec<&str> = f.host.split('.').collect();
+        labels[labels.len().saturating_sub(2)..].join(".")
+    })
 }
 
-fn section_text(host: &str, recs: &[(&str, String)]) -> String {
+fn section_text(f: &Fly, recs: &[(&str, String)]) -> String {
+    let host = &f.host;
     let items: Vec<String> = recs
         .iter()
         .map(|(t, c)| {
@@ -32,7 +36,7 @@ fn section_text(host: &str, recs: &[(&str, String)]) -> String {
         .collect();
     format!(
         "[{SECTION}]\nzone = \"{}\"\nrecords = [{}]\n",
-        zone(host),
+        zone(f),
         items.join(", ")
     )
 }
@@ -124,7 +128,7 @@ impl Step for Dns {
                 Ok(r) => r,
                 Err(c) => return Ok(c),
             };
-            if let Err(e) = hoist::append_section(&cx.dir, &section_text(&f.host, &recs)) {
+            if let Err(e) = hoist::append_section(&cx.dir, &section_text(&f, &recs)) {
                 return Ok(Check::Failed(e));
             }
         }
@@ -172,9 +176,36 @@ mod tests {
     }
 
     #[test]
-    fn zone_is_the_last_two_labels() {
-        assert_eq!(zone("app.example.com"), "example.com");
-        assert_eq!(zone("example.com"), "example.com");
+    fn zone_defaults_to_the_last_two_labels_and_can_be_set() {
+        let fly = |host: &str, zone: Option<&str>| Fly {
+            host: host.into(),
+            zone: zone.map(Into::into),
+            ..fly_manifest().fly().unwrap().clone()
+        };
+        assert_eq!(zone(&fly("app.example.com", None)), "example.com");
+        assert_eq!(zone(&fly("example.com", None)), "example.com");
+        assert_eq!(
+            zone(&fly("app.example.co.uk", Some("example.co.uk"))),
+            "example.co.uk"
+        );
+    }
+
+    #[test]
+    fn apply_writes_the_manifest_zone() {
+        let d = tempfile::tempdir().unwrap();
+        let mut m = cf_manifest();
+        let f = m.deploy.as_mut().unwrap().fly.as_mut().unwrap();
+        f.host = "app.example.co.uk".into();
+        f.zone = Some("example.co.uk".into());
+        let r = fly_ips()
+            .on(
+                &["hoist", "--json", "apply"],
+                Out::ok(r#"{"ok":true,"items":[]}"#),
+            )
+            .on(&["hoist", "--json", "check"], Out::ok(r#"{"ok":true}"#));
+        run(&r, d.path(), m, true, true);
+        let t = std::fs::read_to_string(d.path().join("hoist.toml")).unwrap();
+        assert!(t.contains("zone = \"example.co.uk\""), "{t}");
     }
 
     #[test]

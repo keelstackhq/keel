@@ -69,6 +69,8 @@ app = "my-app"
 region = "fra"
 host = "app.example.com"          # no scheme
 dns = "cloudflare"                # or "none" (default)
+zone = "example.com"              # optional; HOST or a parent domain. Default: last two labels
+                                  # of host (set it for hosts such as app.example.co.uk)
 
 [backup]                          # optional; needs [deploy.fly]
 provider = "r2"                   # or "s3" (not automated)

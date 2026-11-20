@@ -48,6 +48,10 @@ pub struct Fly {
     pub host: String,
     #[serde(default)]
     pub dns: Dns,
+    /// The Cloudflare zone of `host`: `host` itself or a suffix of it at a label boundary.
+    /// Default: the last two labels of `host`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zone: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -154,6 +158,14 @@ impl Manifest {
                 return Err(manifest_err(
                     "[deploy.fly] `host` is a bare hostname such as app.example.com (no scheme or path)",
                 ));
+            }
+            if let Some(z) = &f.zone
+                && !(f.host == *z || f.host.ends_with(&format!(".{z}")))
+            {
+                return Err(manifest_err(format!(
+                    "[deploy.fly] `zone` {z:?} must be `host` {:?} or a parent domain of it, e.g. example.co.uk for app.example.co.uk",
+                    f.host
+                )));
             }
         }
         if let Some(b) = &self.backup {
@@ -361,7 +373,9 @@ mod tests {
     fn deploy_and_backup_errors_name_the_key() {
         for (text, want) in [
             (format!("{FLY}dns = \"route53\"\n"), "route53"),
-            (format!("{FLY}zone = \"x\"\n"), "zone"),
+            (format!("{FLY}bogus = \"x\"\n"), "bogus"),
+            (format!("{FLY}zone = \"x.com\"\n"), "zone"),
+            (format!("{FLY}zone = \"ample.com\"\n"), "zone"),
             (format!("{FLY}[backup]\nprovider = \"gcs\"\n"), "gcs"),
             (
                 format!("{FLY}[backup]\nprovider = \"r2\"\nretention = 3\n"),
@@ -383,6 +397,15 @@ mod tests {
             assert_eq!(e.exit_code(), 3);
             assert!(e.to_string().contains(want), "{text}: {e}");
         }
+    }
+
+    #[test]
+    fn zone_is_the_host_or_a_parent_domain_at_a_label_boundary() {
+        for ok in ["app.example.com", "example.com", "com"] {
+            let m = Manifest::parse(&format!("{FLY}zone = \"{ok}\"\n")).unwrap();
+            assert_eq!(m.fly().unwrap().zone.as_deref(), Some(ok));
+        }
+        assert_eq!(Manifest::parse(FLY).unwrap().fly().unwrap().zone, None);
     }
 
     #[test]
