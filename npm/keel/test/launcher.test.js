@@ -56,18 +56,18 @@ function runAs(platform, arch, args = []) {
   });
 }
 
-test("an unknown platform exits 1 and lists the supported ones", () => {
+test("an unknown platform exits 3 and lists the supported ones", () => {
   const r = runAs("aix", "ppc64");
-  assert.equal(r.status, 1);
+  assert.equal(r.status, 3);
   assert.match(r.stderr, /aix-ppc64/);
   for (const p of ["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64", "win32-x64"]) {
     assert.ok(r.stderr.includes(p), `stderr lists ${p}: ${r.stderr}`);
   }
 });
 
-test("a missing platform package exits 1 and names it", () => {
+test("a missing platform package exits 3 and names it", () => {
   const r = runAs("linux", "arm64");
-  assert.equal(r.status, 1);
+  assert.equal(r.status, 3);
   assert.match(r.stderr, /@keelstackhq\/keel-linux-arm64/);
 });
 

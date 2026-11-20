@@ -14,9 +14,9 @@ Human-only items, with the exact action:
 - npm scope: make sure the `@keelstackhq` scope is reserved, then publish `@keelstackhq/keel` and
   `@keelstackhq/keel-{linux-x64,linux-arm64,darwin-x64,darwin-arm64,win32-x64}` (first publish
   is done by hoist, see "first release").
-- `release` environment: in repo keelstackhq/keel, Settings, Environments, create `release` and add
+- `release` environment: in repo keelstackhq/keel, Settings, Environments, create `release` (for the release workflow, still to be written) and add
   required reviewers (or run `hoist apply` once the repo has a `hoist.toml`).
 - crates.io: publish the crate `keel-cli` (the binary is `keel`); needs a crates.io owner token
   (`CARGO_REGISTRY_TOKEN`) stored as a secret on the `release` environment.
 - First release: run `hoist release bootstrap` from a checkout with the owner's npm and crates.io
-  tokens (bootstrap does the first publish locally); later releases go through the release workflow.
+  tokens (bootstrap does the first publish locally); later releases will go through a release workflow that is still to be written (only `.github/workflows/ci.yml` exists).

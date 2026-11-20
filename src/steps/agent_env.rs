@@ -136,7 +136,7 @@ mod tests {
 
     #[test]
     fn prelude_is_valid_bash_and_never_fails() {
-        assert!(PRELUDE.contains("/etc/profile.d/keel-proxy-ca.sh"));
+        assert!(PRELUDE.contains("keel-proxy-ca.sh"));
         for v in [
             "NODE_EXTRA_CA_CERTS",
             "SSL_CERT_FILE",
@@ -158,5 +158,70 @@ mod tests {
             Ok(s) => assert!(s.success()),
             Err(_) => eprintln!("bash not found; skipped `bash -n`"),
         }
+    }
+
+    /// Run the prelude in `dir` (with a repo hook that exits `hook_code`), then print the CA var.
+    fn run_prelude(hook_code: i32, path: &str) -> Option<(bool, String, bool)> {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir(d.path().join("scripts")).unwrap();
+        std::fs::write(
+            d.path().join("scripts/proxy-ca.sh"),
+            format!("exit {hook_code}\n"),
+        )
+        .unwrap();
+        let ca = d.path().join("ca.pem");
+        std::fs::write(&ca, "x").unwrap();
+        let prof = d.path().join("profile");
+        std::fs::create_dir(&prof).unwrap();
+        let f = d.path().join("p.sh");
+        std::fs::write(
+            &f,
+            format!("{PRELUDE}\necho \"CA=${{GIT_SSL_CAINFO:-}}\"\n"),
+        )
+        .unwrap();
+        let o = std::process::Command::new("bash")
+            .arg(&f)
+            .current_dir(d.path())
+            .env("PATH", path)
+            .env("SSL_CERT_FILE", &ca)
+            .env("KEEL_PROFILE_DIR", &prof)
+            .output()
+            .ok()?;
+        let out = String::from_utf8_lossy(&o.stdout).to_string();
+        Some((
+            o.status.success(),
+            out,
+            prof.join("keel-proxy-ca.sh").exists(),
+        ))
+    }
+
+    #[test]
+    fn hook_success_exports_in_this_shell_and_skips_the_fallback_file() {
+        let Some((ok, out, wrote)) = run_prelude(0, &std::env::var("PATH").unwrap_or_default())
+        else {
+            return;
+        };
+        assert!(ok);
+        assert!(out.contains("CA=/"), "{out}");
+        assert!(!wrote);
+    }
+
+    #[test]
+    fn hook_failure_falls_back_and_still_exits_zero() {
+        let bin = tempfile::tempdir().unwrap();
+        let Ok(b) = ["/usr/bin/bash", "/bin/bash"]
+            .iter()
+            .find(|p| std::path::Path::new(p).exists())
+            .ok_or(())
+        else {
+            return;
+        };
+        std::os::unix::fs::symlink(b, bin.path().join("bash")).unwrap();
+        let Some((ok, out, wrote)) = run_prelude(1, bin.path().to_str().unwrap()) else {
+            return;
+        };
+        assert!(ok, "never a non-zero exit");
+        assert!(out.contains("CA=/"), "{out}");
+        assert!(wrote, "fallback runs when the hook fails");
     }
 }

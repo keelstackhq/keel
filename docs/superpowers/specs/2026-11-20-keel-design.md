@@ -184,7 +184,8 @@ is not committed (`.keel/` is in `.gitignore`).
 
 `@keelstackhq/keel` with `optionalDependencies` on `@keelstackhq/keel-{linux-x64,linux-arm64,
 darwin-x64,darwin-arm64,win32-x64}`, same launcher as hoist (`npm/keel/bin/keel.js`). Publishing
-is human-only (Blocked in `docs/PROGRESS.md`).
+is human-only (Blocked in `docs/PROGRESS.md`). Launcher environment errors (unsupported platform, platform package missing, binary cannot
+start) exit 3, like keel's own environment errors.
 
 ## 10. Open questions (for the orchestrator)
 

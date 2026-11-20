@@ -2,11 +2,14 @@
 "use strict";
 
 // npm launcher for keel: runs the binary from the platform package npm installed through
-// optionalDependencies, with inherited stdio and the binary's exit code.
+// optionalDependencies, with inherited stdio and the binary's exit code. Launcher environment
+// errors (unsupported platform, missing or unrunnable binary) exit 3, keel's environment code.
 
 const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
+
+const ENV_ERROR = 3;
 
 /** `process.platform-process.arch` -> platform package (one per release target). */
 const PLATFORMS = {
@@ -37,7 +40,7 @@ function run(args, resolve = require.resolve) {
     process.stderr.write(
       `keel: no binary for ${key}; supported platforms: ${Object.keys(PLATFORMS).join(", ")}\n`,
     );
-    return 1;
+    return ENV_ERROR;
   }
   let bin;
   try {
@@ -47,7 +50,7 @@ function run(args, resolve = require.resolve) {
       `keel: platform package ${pkg} is not installed; reinstall @keelstackhq/keel ` +
         `without --no-optional (or --omit=optional)\n`,
     );
-    return 1;
+    return ENV_ERROR;
   }
   let result = spawnSync(bin, args, { stdio: "inherit" });
   if (result.error && result.error.code === "EACCES") {
@@ -61,7 +64,7 @@ function run(args, resolve = require.resolve) {
   }
   if (result.error) {
     process.stderr.write(`keel: cannot run ${bin}: ${result.error.message}\n`);
-    return 1;
+    return ENV_ERROR;
   }
   if (result.signal) {
     process.kill(process.pid, result.signal);
