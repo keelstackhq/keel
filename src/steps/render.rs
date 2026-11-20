@@ -160,11 +160,15 @@ impl Step for Render {
         };
         let committed = if rendered {
             // Lockfile-only: commit just what keel changed, never the rest of the worktree.
+            // A crashed earlier run may have written both files without committing them, so
+            // commit whatever is dirty (`commit_path` is a no-op for a clean path).
             let mut res = Ok(());
-            if lockfile {
+            if lockfile
+                || (cx.dir.join("Cargo.toml").is_file() && cx.dir.join("Cargo.lock").is_file())
+            {
                 res = git::commit_path(r, &cx.dir, "Cargo.lock", "keel: add Cargo.lock");
             }
-            if res.is_ok() && ignored {
+            if res.is_ok() && cx.dir.join(".gitignore").is_file() {
                 res = git::commit_path(r, &cx.dir, ".gitignore", "keel: ignore .keel");
             }
             res
@@ -514,6 +518,29 @@ mod tests {
                 "{tpl}"
             );
         }
+    }
+
+    #[test]
+    fn resume_also_commits_cargo_lock_and_gitignore() {
+        let d = tempfile::tempdir().unwrap();
+        lock(d.path());
+        std::fs::create_dir(d.path().join(".keel")).unwrap();
+        std::fs::write(d.path().join(LIST), "src/main.rs\n").unwrap();
+        std::fs::write(d.path().join("Cargo.toml"), "").unwrap();
+        std::fs::write(d.path().join("Cargo.lock"), "").unwrap();
+        // The crashed run already added `.keel/` to .gitignore (uncommitted).
+        std::fs::write(d.path().join(".gitignore"), ".keel/\n").unwrap();
+        let r = fake();
+        let _ = apply(&r, d.path(), "rust");
+        let l = lines(&r);
+        for p in ["Cargo.lock", ".gitignore"] {
+            assert!(
+                l.iter()
+                    .any(|x| x.starts_with("git commit") && x.ends_with(&format!("-- {p}"))),
+                "{p}: {l:?}"
+            );
+        }
+        assert!(!l.iter().any(|x| x.contains(" -A")), "{l:?}");
     }
 
     #[test]
