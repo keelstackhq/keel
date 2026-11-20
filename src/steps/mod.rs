@@ -3,14 +3,17 @@ use crate::ctx::Ctx;
 use crate::error::KeelError;
 use crate::step::Step;
 
+pub mod agent_env;
 pub mod apps;
+pub mod doctor;
 pub mod governance;
+pub mod merge;
 pub mod preflight;
 pub mod render;
 pub mod settings;
 pub mod token;
 
-/// Steps 1-6; the agent-env, doctor and merge steps are added after them.
+/// All nine steps, in order.
 pub fn all_steps() -> Vec<Box<dyn Step>> {
     vec![
         Box::new(preflight::Preflight),
@@ -19,6 +22,9 @@ pub fn all_steps() -> Vec<Box<dyn Step>> {
         Box::new(governance::Governance),
         Box::new(settings::Settings),
         Box::new(token::Token),
+        Box::new(agent_env::AgentEnv),
+        Box::new(doctor::Doctor),
+        Box::new(merge::Merge),
     ]
 }
 
@@ -26,6 +32,14 @@ pub(crate) fn repo(cx: &Ctx) -> Result<String, KeelError> {
     cx.manifest.repo.clone().ok_or_else(|| {
         KeelError::Env("no repo: pass --repo OWNER/NAME or set `repo` in keel.toml".into())
     })
+}
+
+/// The branch steps 3-9 work on: the checkout's current branch, else the manifest's.
+pub(crate) fn work_branch(cx: &Ctx) -> String {
+    crate::tools::git::current_branch(cx.runner, &cx.dir)
+        .ok()
+        .filter(|b| !b.is_empty() && b != "HEAD")
+        .unwrap_or_else(|| cx.manifest.branch_name().to_string())
 }
 
 #[cfg(test)]

@@ -110,3 +110,56 @@ pub fn label_create(r: &dyn Runner, repo: &str, name: &str) -> Result<(), String
 pub fn secret_cmd(repo: &str, env: &str, name: &str, value: &[u8]) -> Cmd {
     Cmd::new("gh", &["secret", "set", name, "--env", env, "--repo", repo]).stdin(value.to_vec())
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pr {
+    pub number: u64,
+    pub url: String,
+    /// `OPEN`, `MERGED` or `CLOSED`.
+    pub state: String,
+    pub head: String,
+}
+
+/// The PR of `branch`, if any: `gh pr view <branch> --json number,url,state,headRefOid`.
+pub fn pr_view(r: &dyn Runner, dir: &std::path::Path, branch: &str) -> Option<Pr> {
+    let o = r.run(
+        &Cmd::new(
+            "gh",
+            &[
+                "pr",
+                "view",
+                branch,
+                "--json",
+                "number,url,state,headRefOid",
+            ],
+        )
+        .dir(dir),
+    );
+    if o.code != 0 {
+        return None;
+    }
+    let v = json(&o)?;
+    Some(Pr {
+        number: v["number"].as_u64()?,
+        url: v["url"].as_str()?.to_string(),
+        state: v["state"].as_str()?.to_string(),
+        head: v["headRefOid"].as_str().unwrap_or("").to_string(),
+    })
+}
+
+/// `gh pr create --repo R --head B --title T --body BODY`
+pub fn pr_create_cmd(
+    dir: &std::path::Path,
+    repo: &str,
+    branch: &str,
+    title: &str,
+    body: &str,
+) -> Cmd {
+    Cmd::new(
+        "gh",
+        &[
+            "pr", "create", "--repo", repo, "--head", branch, "--title", title, "--body", body,
+        ],
+    )
+    .dir(dir)
+}

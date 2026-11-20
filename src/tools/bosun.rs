@@ -87,3 +87,61 @@ pub fn plan_import_cmd(dir: &Path, file: &str, dry_run: bool) -> Cmd {
     }
     Cmd::new("bosun", &a).dir(dir)
 }
+
+/// `bosun --json setup-snippet`
+pub fn setup_snippet_cmd(dir: &Path) -> Cmd {
+    Cmd::new("bosun", &["--json", "setup-snippet"]).dir(dir)
+}
+
+/// `bosun --json doctor --remote [--all]`
+pub fn doctor_cmd(dir: &Path, all: bool) -> Cmd {
+    let mut a = vec!["--json", "doctor", "--remote"];
+    if all {
+        a.push("--all");
+    }
+    Cmd::new("bosun", &a).dir(dir)
+}
+
+/// `Ok(missing item details)` from `doctor --remote --all` (retried without `--all` on exit 2).
+pub fn doctor(r: &dyn Runner, dir: &Path) -> Result<Vec<String>, String> {
+    let mut c = doctor_cmd(dir, true);
+    let mut o = r.run(&c);
+    if o.code == 2 {
+        c = doctor_cmd(dir, false);
+        o = r.run(&c);
+    }
+    let v = json(&o);
+    let items = v.as_ref().and_then(|v| v["data"]["items"].as_array());
+    let missing: Vec<String> = items
+        .map(|a| {
+            a.iter()
+                .filter(|i| i["status"] == "missing")
+                .map(|i| {
+                    let name = i["id"].as_str().or(i["name"].as_str()).unwrap_or("item");
+                    match i["fix"].as_str().or(i["detail"].as_str()) {
+                        Some(d) if !d.is_empty() => format!("{name}: {d}"),
+                        _ => name.to_string(),
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let count = v
+        .as_ref()
+        .and_then(|v| v["data"]["missing"].as_u64())
+        .unwrap_or(missing.len() as u64);
+    if count > 0 {
+        return Ok(if missing.is_empty() {
+            vec![format!("{count} item(s)")]
+        } else {
+            missing
+        });
+    }
+    if o.code != 0 {
+        return Err(failure(&c, &o));
+    }
+    if v.is_none() {
+        return Err(not_json(&c));
+    }
+    Ok(Vec::new())
+}

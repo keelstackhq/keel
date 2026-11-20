@@ -54,7 +54,8 @@ fn main() -> ExitCode {
                     render_json_error(
                         command,
                         &err.to_string(),
-                        "the message says what to change; see `keel --help`"
+                        err.fix()
+                            .unwrap_or("the message says what to change; see `keel --help`")
                     )
                 );
             }
