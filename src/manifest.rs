@@ -31,6 +31,51 @@ impl Default for Token {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Dns {
+    Cloudflare,
+    #[default]
+    None,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Fly {
+    pub app: String,
+    pub region: String,
+    /// Public hostname, no scheme.
+    pub host: String,
+    #[serde(default)]
+    pub dns: Dns,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Deploy {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fly: Option<Fly>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Provider {
+    R2,
+    S3,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Backup {
+    pub provider: Provider,
+    #[serde(default = "default_retention")]
+    pub retention_days: u32,
+}
+
+fn default_retention() -> u32 {
+    30
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Confirmed {
@@ -57,6 +102,10 @@ pub struct Manifest {
     pub token: Token,
     #[serde(default)]
     pub confirmed: Confirmed,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deploy: Option<Deploy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup: Option<Backup>,
 }
 
 fn manifest_err(message: impl Into<String>) -> KeelError {
@@ -80,7 +129,43 @@ impl Manifest {
     }
 
     pub fn parse(text: &str) -> Result<Manifest, KeelError> {
-        toml::from_str(text).map_err(|e| manifest_err(e.message().trim().to_string()))
+        let m: Manifest =
+            toml::from_str(text).map_err(|e| manifest_err(e.message().trim().to_string()))?;
+        m.validate()?;
+        Ok(m)
+    }
+
+    fn validate(&self) -> Result<(), KeelError> {
+        if let Some(f) = self.fly() {
+            for (key, v) in [("app", &f.app), ("region", &f.region), ("host", &f.host)] {
+                if v.trim().is_empty() {
+                    return Err(manifest_err(format!(
+                        "[deploy.fly] `{key}` must not be empty"
+                    )));
+                }
+            }
+            if f.host.contains("://") || f.host.contains('/') {
+                return Err(manifest_err(
+                    "[deploy.fly] `host` is a bare hostname such as app.example.com (no scheme or path)",
+                ));
+            }
+        }
+        if let Some(b) = &self.backup {
+            if self.fly().is_none() {
+                return Err(manifest_err(
+                    "[backup] needs [deploy.fly] (the backup secrets go to the fly app): add a [deploy.fly] table or remove [backup]",
+                ));
+            }
+            if b.retention_days < 1 {
+                return Err(manifest_err("[backup] `retention_days` must be at least 1"));
+            }
+        }
+        Ok(())
+    }
+
+    /// The `[deploy.fly]` table, if any.
+    pub fn fly(&self) -> Option<&Fly> {
+        self.deploy.as_ref().and_then(|d| d.fly.as_ref())
     }
 
     pub fn exists(dir: &Path) -> bool {
@@ -241,6 +326,49 @@ mod tests {
         assert!(e.to_string().contains("reop"), "{e}");
         let e = Manifest::parse("[token]\nsecrt = \"x\"\n").unwrap_err();
         assert!(e.to_string().contains("secrt"), "{e}");
+    }
+
+    const FLY: &str = "[deploy.fly]\napp = \"a\"\nregion = \"fra\"\nhost = \"app.example.com\"\n";
+
+    #[test]
+    fn deploy_and_backup_tables_parse_with_defaults_and_round_trip() {
+        let m = Manifest::parse(&format!("{FLY}[backup]\nprovider = \"r2\"\n")).unwrap();
+        let f = m.fly().unwrap();
+        assert_eq!((f.app.as_str(), f.dns), ("a", Dns::None));
+        let b = m.backup.as_ref().unwrap();
+        assert_eq!((b.provider, b.retention_days), (Provider::R2, 30));
+        let dir = tempfile::tempdir().unwrap();
+        m.write(dir.path()).unwrap();
+        assert_eq!(Manifest::load(dir.path()).unwrap(), m);
+        assert!(Manifest::parse("").unwrap().fly().is_none());
+    }
+
+    #[test]
+    fn deploy_and_backup_errors_name_the_key() {
+        for (text, want) in [
+            (format!("{FLY}dns = \"route53\"\n"), "route53"),
+            (format!("{FLY}zone = \"x\"\n"), "zone"),
+            (format!("{FLY}[backup]\nprovider = \"gcs\"\n"), "gcs"),
+            (
+                format!("{FLY}[backup]\nprovider = \"r2\"\nretention = 3\n"),
+                "retention",
+            ),
+            (
+                format!("{FLY}[backup]\nprovider = \"r2\"\nretention_days = 0\n"),
+                "retention_days",
+            ),
+            ("[backup]\nprovider = \"r2\"\n".to_string(), "[deploy.fly]"),
+            (
+                "[deploy.fly]\napp = \"a\"\nregion = \"fra\"\n".to_string(),
+                "host",
+            ),
+            (FLY.replace("app.example.com", "https://x.io"), "host"),
+        ] {
+            let e = Manifest::parse(&text).unwrap_err();
+            assert!(matches!(e, KeelError::Manifest { .. }), "{text}");
+            assert_eq!(e.exit_code(), 3);
+            assert!(e.to_string().contains(want), "{text}: {e}");
+        }
     }
 
     #[test]
