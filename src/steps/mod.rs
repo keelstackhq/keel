@@ -16,6 +16,7 @@ pub mod preflight;
 pub mod render;
 pub mod settings;
 pub mod token;
+pub mod verify;
 
 /// All steps, in order.
 pub fn all_steps() -> Vec<Box<dyn Step>> {
@@ -32,6 +33,7 @@ pub fn all_steps() -> Vec<Box<dyn Step>> {
         Box::new(backup::Backup),
         Box::new(doctor::Doctor),
         Box::new(merge::Merge),
+        Box::new(verify::Verify),
     ]
 }
 
@@ -166,6 +168,7 @@ pub(crate) mod testutil {
             manifest,
             pins: Pins::from_texts("t", pins_text, None).unwrap(),
             opts,
+            verify: None,
             sleep,
             stdin,
         }

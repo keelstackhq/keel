@@ -23,7 +23,10 @@ case "$name $*" in
   "gh api user/installations --paginate"*)
     echo '{"id":1,"app_slug":"claude","repository_selection":"all"}'
     [ "$KEEL_SCENARIO" = fresh ] || echo '{"id":2,"app_slug":"renovate","repository_selection":"all"}';;
+  "gh api repos/owner/name/environments/production/secrets/"*)
+    [ "$KEEL_SCENARIO" = done ] || [ -f "$KEEL_LOG/fly_setup" ] || exit 1;;
   "gh api repos/owner/name/environments/"*)
+    [ "$KEEL_SCENARIO" = deploy ] && exit 0;
     [ "$KEEL_SCENARIO" = done ] || [ -f "$KEEL_LOG/secret_set" ] || exit 1;;
   "gh repo view"*) echo '{"defaultBranchRef":{"name":"main"}}';;
   "gh pr view"*)
@@ -42,6 +45,13 @@ case "$name $*" in
       printf '{"ok":false,"exit_code":5,"data":{"offline":true,"missing":0},"error":null}\n'; exit 5
     fi
     env '{"items":[],"missing":0}';;
+  "fly auth whoami"*) echo '{"email":"a@b.c"}';;
+  "fly status"*|"fly certs show"*)
+    [ "$KEEL_SCENARIO" = done ] || [ -f "$KEEL_LOG/fly_setup" ] || exit 1
+    echo '{}';;
+  "fly ips list"*) echo '[{"Address":"1.2.3.4","Type":"v4"},{"Address":"2a09::1","Type":"v6"}]';;
+  "gh run list"*) echo '[{"status":"completed","conclusion":"success","url":"https://github.com/owner/name/actions/runs/1"}]';;
+  curl*) printf 200;;
   "hoist --version") echo "hoist 0.5.1";;
   "hoist --json "*) echo '{"ok":true,"exit_code":0,"items":[],"human_steps":[]}';;
   "berth --version") echo "berth 0.2.1";;
@@ -49,9 +59,13 @@ esac
 exit 0
 "#;
 
-const TOOLS: [&str; 9] = [
-    "gh", "git", "node", "npm", "splice", "bosun", "hoist", "berth", "cargo",
+const TOOLS: [&str; 11] = [
+    "gh", "git", "node", "npm", "splice", "bosun", "hoist", "berth", "cargo", "fly", "curl",
 ];
+
+/// The hull fly piece's script, as a stub: records its argv and that it ran.
+const FLY_SETUP: &str =
+    "#!/bin/sh\necho \"fly-setup.sh $*\" >> \"$KEEL_LOG/calls.log\"\n: > \"$KEEL_LOG/fly_setup\"\n";
 
 struct Env {
     _root: tempfile::TempDir,
@@ -161,7 +175,7 @@ fn first_run_stops_at_apps_with_one_json_object() {
     assert_eq!(v["status"], "human");
     assert_eq!(v["human_step"]["id"], "apps");
     let steps = v["steps"].as_array().unwrap();
-    assert_eq!(steps.len(), 12);
+    assert_eq!(steps.len(), 13);
     assert_eq!(steps[0]["action"], "ok");
     assert_eq!(steps[1]["action"], "pending");
     assert_eq!(steps[2]["action"], "not-reached");
@@ -338,4 +352,87 @@ fn doctor_offline_is_a_human_step_with_exit_5() {
         v["human_step"]["command"],
         "export GH_TOKEN=$(gh auth token)"
     );
+}
+
+const FLY_MANIFEST: &str = "repo = \"owner/name\"\ntemplate = \"rust\"\npieces = [\"rust-cli:my-cli\", \"fly\"]\n[confirmed]\nagent_env = true\n[deploy.fly]\napp = \"my-app\"\nregion = \"fra\"\nhost = \"app.example.com\"\n";
+
+fn fly_repo(env: &Env) {
+    env.rendered();
+    std::fs::write(env.repo.join("keel.toml"), FLY_MANIFEST).unwrap();
+    std::fs::create_dir(env.repo.join("scripts")).unwrap();
+    let s = env.repo.join("scripts/fly-setup.sh");
+    std::fs::write(&s, FLY_SETUP).unwrap();
+    std::fs::set_permissions(&s, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn deploy_fly_reaches_the_merge_gate() {
+    let env = Env::new();
+    fly_repo(&env);
+    let (code, out, err) = run(&env, "deploy", &["--json".into(), "up".into()], "");
+    assert_eq!(code, 5, "{out} {err}");
+    let v = one_json(&out);
+    assert_eq!(v["human_step"]["id"], "merge");
+    let by_id = |id: &str| {
+        v["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == id)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(by_id("deploy")["action"], "done");
+    assert_eq!(by_id("dns")["action"], "ok");
+    assert!(
+        by_id("dns")["detail"]
+            .as_str()
+            .unwrap()
+            .contains("A app.example.com 1.2.3.4")
+    );
+    assert_eq!(by_id("backup")["detail"], "no [backup]");
+    assert_eq!(by_id("verify")["action"], "not-reached");
+    assert_eq!(v["verify"]["healthz"], "not-run");
+    assert_eq!(v["verify"]["http_status"], serde_json::Value::Null);
+    let calls = env.read("calls.log");
+    assert!(
+        calls.contains("fly-setup.sh --app my-app --region fra --host app.example.com"),
+        "{calls}"
+    );
+    assert!(
+        calls.contains("fly-setup.sh --app my-app --set-gh-secret production"),
+        "{calls}"
+    );
+    assert!(!calls.contains("--deploy"), "{calls}");
+}
+
+#[test]
+fn merged_deploy_is_verified_over_http() {
+    let env = Env::new();
+    fly_repo(&env);
+    let (code, out, err) = run(&env, "done", &["--json".into(), "up".into()], "");
+    assert_eq!(code, 0, "{out} {err}");
+    let v = one_json(&out);
+    assert_eq!(v["verify"]["url"], "https://app.example.com");
+    assert_eq!(v["verify"]["healthz"], "ok");
+    assert_eq!(v["verify"]["http_status"], 200);
+    assert_eq!(v["verify"]["smoke"], "none");
+    let calls = env.read("calls.log");
+    assert!(
+        calls.contains(
+            "curl -fsS -o /dev/null -w %{http_code} --max-time 10 https://app.example.com/healthz"
+        ),
+        "{calls}"
+    );
+    assert!(!calls.contains("fly-setup.sh"), "{calls}");
+    // Without [deploy.fly] the report has no verify key.
+    let env2 = Env::new();
+    env2.rendered();
+    std::fs::write(
+        env2.repo.join("keel.toml"),
+        FLY_MANIFEST.split("[deploy.fly]").next().unwrap(),
+    )
+    .unwrap();
+    let (_, out, _) = run(&env2, "done", &["--json".into(), "up".into()], "");
+    assert!(one_json(&out).get("verify").is_none());
 }

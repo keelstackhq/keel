@@ -104,6 +104,7 @@ pub fn run_with(
             cloudflare_token: std::env::var_os("CLOUDFLARE_API_TOKEN")
                 .is_some_and(|v| !v.is_empty()),
         },
+        verify: None,
         sleep,
         stdin,
     };

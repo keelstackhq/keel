@@ -21,6 +21,8 @@ pub struct Ctx<'a> {
     pub manifest: Manifest,
     pub pins: Pins,
     pub opts: Opts,
+    /// Set by the verify step.
+    pub verify: Option<crate::report::Verify>,
     pub sleep: &'a dyn Fn(Duration),
     pub stdin: &'a dyn Fn() -> std::io::Result<Zeroizing<String>>,
 }

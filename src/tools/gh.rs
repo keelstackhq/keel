@@ -96,6 +96,55 @@ pub fn secret_exists(r: &dyn Runner, repo: &str, env: &str, name: &str) -> bool 
         == 0
 }
 
+/// The newest run of a workflow on a branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Run {
+    pub status: String,
+    pub conclusion: String,
+    pub url: String,
+}
+
+/// `gh run list --repo R --workflow W --branch B --limit 1 --json status,conclusion,url`:
+/// `None` when the workflow has no run yet.
+pub fn latest_run(
+    r: &dyn Runner,
+    repo: &str,
+    workflow: &str,
+    branch: &str,
+) -> Result<Option<Run>, String> {
+    let c = Cmd::new(
+        "gh",
+        &[
+            "run",
+            "list",
+            "--repo",
+            repo,
+            "--workflow",
+            workflow,
+            "--branch",
+            branch,
+            "--limit",
+            "1",
+            "--json",
+            "status,conclusion,url",
+        ],
+    );
+    let o = r.run(&c);
+    if o.code != 0 {
+        return Err(failure(&c, &o));
+    }
+    let v = json(&o).ok_or_else(|| super::not_json(&c))?;
+    let Some(runs) = v.as_array() else {
+        return Err(super::not_json(&c));
+    };
+    let s = |r: &serde_json::Value, k: &str| r[k].as_str().unwrap_or("").to_string();
+    Ok(runs.first().map(|r| Run {
+        status: s(r, "status"),
+        conclusion: s(r, "conclusion"),
+        url: s(r, "url"),
+    }))
+}
+
 pub fn label_create(r: &dyn Runner, repo: &str, name: &str) -> Result<(), String> {
     let c = Cmd::new("gh", &["label", "create", name, "--repo", repo, "--force"]);
     let o = r.run(&c);
