@@ -106,9 +106,12 @@ pub fn run_with(
     if doctor {
         report.command = "doctor".into();
         if report.exit_code == 2 {
-            // doctor reports drift (1), not a pending human step.
+            // doctor reports drift (1), not a pending human step: the exit stays 1, and the
+            // status stays `human` when the report carries a human step (§5.3).
             report.exit_code = 1;
-            report.status = Status::Planned;
+            if report.human_step.is_none() {
+                report.status = Status::Planned;
+            }
         }
     }
     Ok(report)

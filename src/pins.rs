@@ -131,6 +131,7 @@ pub fn platform_key() -> String {
 
 pub fn platform_key_for(os: &str, arch: &str) -> String {
     let os = match os {
+        "macos" => "darwin",
         "windows" => "win32",
         o => o,
     };
@@ -188,7 +189,7 @@ mod tests {
     fn platform_keys() {
         assert_eq!(platform_key_for("linux", "x86_64"), "linux_x64");
         assert_eq!(platform_key_for("linux", "aarch64"), "linux_arm64");
-        assert_eq!(platform_key_for("macos", "aarch64"), "macos_arm64");
+        assert_eq!(platform_key_for("macos", "aarch64"), "darwin_arm64");
         assert_eq!(platform_key_for("windows", "x86_64"), "win32_x64");
     }
 

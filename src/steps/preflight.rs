@@ -13,7 +13,14 @@ pub struct Preflight;
 const TOOLS: [&str; 4] = ["splice", "bosun", "hoist", "berth"];
 
 fn at_pin(out: &Out, version: &str) -> bool {
-    out.code == 0 && out.stdout.contains(version)
+    // Exact match of the last token of the first line (`splice 0.6.0`, `v0.6.0`), not a substring.
+    let tok = out
+        .stdout
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().last())
+        .unwrap_or("");
+    out.code == 0 && tok.strip_prefix('v').unwrap_or(tok) == version
 }
 
 impl Preflight {
@@ -166,6 +173,18 @@ impl Step for Preflight {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn at_pin_is_an_exact_version_match() {
+        let ok = |s: &str| Out::ok(s);
+        assert!(at_pin(&ok("splice 0.6.0\n"), "0.6.0"));
+        assert!(at_pin(&ok("v0.6.0"), "0.6.0"));
+        assert!(at_pin(&ok("0.6.0\nextra 1.0"), "0.6.0"));
+        assert!(!at_pin(&ok("berth 0.2.10"), "0.2.1"));
+        assert!(!at_pin(&ok("tool 10.6.0"), "0.6.0"));
+        assert!(!at_pin(&ok("tool 0.6.0-rc1"), "0.6.0"));
+        assert!(!at_pin(&Out::with(1, "0.6.0", ""), "0.6.0"));
+    }
+
     use super::super::testutil::*;
     use super::*;
     use crate::ctx::Opts;

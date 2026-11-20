@@ -30,13 +30,17 @@ case "$name $*" in
     st=OPEN; [ "$KEEL_SCENARIO" = done ] && st=MERGED
     echo '{"number":7,"url":"https://github.com/owner/name/pull/7","state":"'$st'","headRefOid":"abc123"}';;
   "splice --version") echo "splice 0.6.0";;
-  "splice --json pieces"*) echo '{"ok":true,"pieces":[{"id":"rust-cli"}]}';;
+  "splice --json pieces"*) echo "error: unrecognized subcommand 'pieces'" >&2; exit 2;;
   "splice --json --yes new"*) echo '{"ok":true}';;
   "bosun --version") echo "bosun 0.21.0";;
   "bosun --json init"*) env '{"labels":[]}';;
-  "bosun --json plan import"*) env '{"create":[]}';;
+  "bosun --json plan import"*) env '{"epics":[],"tasks":[]}';;
   "bosun --json setup-snippet") env '{"script":"echo SNIPPET"}';;
-  "bosun --json doctor"*) env '{"items":[],"missing":0}';;
+  "bosun --json doctor"*)
+    if [ "$KEEL_SCENARIO" = offline ]; then
+      printf '{"ok":false,"exit_code":5,"data":{"offline":true,"missing":0},"error":null}\n'; exit 5
+    fi
+    env '{"items":[],"missing":0}';;
   "hoist --version") echo "hoist 0.5.1";;
   "hoist --json "*) echo '{"ok":true,"exit_code":0,"items":[],"human_steps":[]}';;
   "berth --version") echo "berth 0.2.1";;
@@ -272,4 +276,24 @@ fn token_goes_to_gh_stdin_only() {
     }
     let sh = std::fs::read_to_string(env.repo.join(".keel/cloud-setup.sh")).unwrap();
     assert!(sh.contains("echo SNIPPET") && !sh.contains(secret));
+}
+
+#[test]
+fn doctor_offline_is_a_human_step_with_exit_1() {
+    let env = Env::new();
+    env.rendered();
+    std::fs::write(
+        env.repo.join("keel.toml"),
+        "repo = \"owner/name\"\ntemplate = \"rust\"\npieces = [\"rust-cli:my-cli\"]\n",
+    )
+    .unwrap();
+    let (code, out, err) = run(&env, "offline", &["--json".into(), "doctor".into()], "");
+    assert_eq!(code, 1, "{out} {err}");
+    let v = one_json(&out);
+    assert_eq!(v["command"], "doctor");
+    assert_eq!(v["status"], "human");
+    assert_eq!(
+        v["human_step"]["command"],
+        "export GH_TOKEN=$(gh auth token)"
+    );
 }

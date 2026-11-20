@@ -41,7 +41,7 @@ impl Step for Governance {
         let c = bosun::plan_import_cmd(&cx.dir, &plan, true);
         Ok(match bosun::run(cx.runner, &c, &pin(cx)) {
             Res::Ok(data) => {
-                let n = data["create"].as_array().map_or(0, Vec::len);
+                let n = bosun::would_create(&data);
                 if n == 0 {
                     Check::Done(format!("bosun initialised, plan {plan} imported"))
                 } else {
@@ -127,7 +127,7 @@ mod tests {
             .on(&["gh", "label", "create"], Out::ok(""))
             .on(
                 &["bosun", "--json", "plan", "import"],
-                Out::ok(r#"{"ok":true,"data":{"create":[]}}"#),
+                Out::ok(r#"{"ok":true,"data":{"epics":[{"action":"unchanged"}],"tasks":[]}}"#),
             )
     }
 
@@ -241,6 +241,27 @@ mod tests {
     }
 
     #[test]
+    fn init_on_an_existing_branch_is_a_human_step_to_upgrade_bosun() {
+        let d = tempfile::tempdir().unwrap();
+        let r = fake().on(
+            &["bosun", "--json", "init"],
+            Out::with(
+                3,
+                r#"{"ok":false,"exit_code":3,"error":{"kind":"conflict","message":"branch keel/bootstrap already exists"}}"#,
+                "",
+            ),
+        );
+        let Check::Human(h) = apply(&r, d.path(), "rust", None) else {
+            panic!()
+        };
+        assert!(
+            h.title
+                .starts_with("bosun 0.21.0 cannot init on an existing branch")
+        );
+        assert_eq!(h.command, "npm install -g @keelstackhq/bosun@latest");
+    }
+
+    #[test]
     fn exit_2_is_an_upgrade_human_step_not_a_crash() {
         let d = tempfile::tempdir().unwrap();
         let r = fake().on(
@@ -292,7 +313,9 @@ mod tests {
         assert!(lines(&r).contains(&"bosun --json plan import plan.md --dry-run".into()));
         let r = fake().on(
             &["bosun", "--json", "plan", "import"],
-            Out::ok(r#"{"ok":true,"data":{"create":[{"id":"a"}]}}"#),
+            Out::ok(
+                r#"{"ok":true,"data":{"epics":[{"action":"unchanged"}],"tasks":[{"action":"would-create"}]}}"#,
+            ),
         );
         assert!(matches!(run(&r, Some("plan.md")), Check::Todo(m) if m.contains("1 to create")));
     }

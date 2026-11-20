@@ -49,6 +49,13 @@ pub fn interpret(cmd: &Cmd, out: &Out, pin: &str) -> Res {
                 command: npm,
             }
         }
+        3 if mentions_existing_branch(out) => Res::Human {
+            title: format!(
+                "bosun {pin} cannot init on an existing branch; upgrade bosun to a release \
+                 where init reuses the current branch"
+            ),
+            command: "npm install -g @keelstackhq/bosun@latest".into(),
+        },
         5 => {
             let e = json(out).map(|v| v["error"].clone()).unwrap_or(Value::Null);
             let title = ["fix", "message"]
@@ -63,6 +70,26 @@ pub fn interpret(cmd: &Cmd, out: &Out, pin: &str) -> Res {
         }
         _ => Res::Failed(failure(cmd, out)),
     }
+}
+
+/// bosun 0.21.0 exits 3 when `init --branch B` finds `B` already existing.
+fn mentions_existing_branch(out: &Out) -> bool {
+    let msg = json(out)
+        .map(|v| v["error"]["message"].as_str().unwrap_or("").to_string())
+        .unwrap_or_default();
+    let all = format!("{msg} {} {}", out.stdout, out.stderr).to_lowercase();
+    all.contains("branch") && all.contains("exist")
+}
+
+/// Epics and tasks `plan import --dry-run` would create (`data.epics[]`, `data.tasks[]`,
+/// `action: "would-create"`).
+pub fn would_create(data: &Value) -> usize {
+    ["epics", "tasks"]
+        .iter()
+        .filter_map(|k| data[*k].as_array())
+        .flatten()
+        .filter(|i| i["action"] == "would-create")
+        .count()
 }
 
 pub fn run(r: &dyn Runner, cmd: &Cmd, pin: &str) -> Res {
@@ -102,15 +129,35 @@ pub fn doctor_cmd(dir: &Path, all: bool) -> Cmd {
     Cmd::new("bosun", &a).dir(dir)
 }
 
-/// `Ok(missing item details)` from `doctor --remote --all` (retried without `--all` on exit 2).
-pub fn doctor(r: &dyn Runner, dir: &Path) -> Result<Vec<String>, String> {
+/// What `bosun doctor --remote` found.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Doctor {
+    Clean,
+    /// Missing items, each `id: fix` when bosun gives a fix.
+    Missing(Vec<String>),
+    /// Exit 5 with `data.offline`: no `GH_TOKEN`/`GITHUB_TOKEN` in the environment.
+    Offline,
+}
+
+fn mentions_all(o: &Out) -> bool {
+    let msg = json(o)
+        .map(|v| v["error"]["message"].as_str().unwrap_or("").to_string())
+        .unwrap_or_default();
+    format!("{} {} {msg}", o.stderr, o.stdout).contains("--all")
+}
+
+/// `doctor --remote --all`, retried without `--all` only on exit 2 that mentions `--all`.
+pub fn doctor(r: &dyn Runner, dir: &Path) -> Result<Doctor, String> {
     let mut c = doctor_cmd(dir, true);
     let mut o = r.run(&c);
-    if o.code == 2 {
+    if o.code == 2 && mentions_all(&o) {
         c = doctor_cmd(dir, false);
         o = r.run(&c);
     }
     let v = json(&o);
+    if o.code == 5 && v.as_ref().is_some_and(|v| v["data"]["offline"] == true) {
+        return Ok(Doctor::Offline);
+    }
     let items = v.as_ref().and_then(|v| v["data"]["items"].as_array());
     let missing: Vec<String> = items
         .map(|a| {
@@ -131,11 +178,11 @@ pub fn doctor(r: &dyn Runner, dir: &Path) -> Result<Vec<String>, String> {
         .and_then(|v| v["data"]["missing"].as_u64())
         .unwrap_or(missing.len() as u64);
     if count > 0 {
-        return Ok(if missing.is_empty() {
+        return Ok(Doctor::Missing(if missing.is_empty() {
             vec![format!("{count} item(s)")]
         } else {
             missing
-        });
+        }));
     }
     if o.code != 0 {
         return Err(failure(&c, &o));
@@ -143,5 +190,85 @@ pub fn doctor(r: &dyn Runner, dir: &Path) -> Result<Vec<String>, String> {
     if v.is_none() {
         return Err(not_json(&c));
     }
-    Ok(Vec::new())
+    Ok(Doctor::Clean)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::exec::FakeRunner;
+
+    fn cmd() -> Cmd {
+        Cmd::new("bosun", &["--json", "init"])
+    }
+
+    #[test]
+    fn init_on_an_existing_branch_is_an_upgrade_human_step() {
+        let o = Out::with(
+            3,
+            r#"{"ok":false,"exit_code":3,"error":{"kind":"conflict","message":"branch keel/bootstrap already exists"}}"#,
+            "",
+        );
+        let Res::Human { title, command } = interpret(&cmd(), &o, "0.21.0") else {
+            panic!()
+        };
+        assert_eq!(
+            title,
+            "bosun 0.21.0 cannot init on an existing branch; upgrade bosun to a release where init reuses the current branch"
+        );
+        assert_eq!(command, "npm install -g @keelstackhq/bosun@latest");
+        // Another exit 3 stays a failure.
+        assert!(matches!(
+            interpret(
+                &cmd(),
+                &Out::with(3, "", "conflict in owners.toml"),
+                "0.21.0"
+            ),
+            Res::Failed(_)
+        ));
+    }
+
+    #[test]
+    fn counts_would_create_epics_and_tasks() {
+        let d = serde_json::json!({"epics":[{"action":"would-create"},{"action":"unchanged"}],
+            "tasks":[{"action":"would-create"},{"action":"would-create"}]});
+        assert_eq!(would_create(&d), 3);
+        assert_eq!(would_create(&serde_json::json!({"epics":[],"tasks":[]})), 0);
+        assert_eq!(would_create(&Value::Null), 0);
+    }
+
+    #[test]
+    fn all_is_retried_only_when_exit_2_mentions_it() {
+        let clean = Out::ok(r#"{"ok":true,"data":{"items":[],"missing":0}}"#);
+        let r = FakeRunner::new()
+            .on(
+                &["bosun", "--json", "doctor", "--remote", "--all"],
+                Out::with(2, "", "error: unexpected argument '--all'"),
+            )
+            .on(&["bosun", "--json", "doctor", "--remote"], clean.clone());
+        assert_eq!(doctor(&r, Path::new(".")).unwrap(), Doctor::Clean);
+        assert_eq!(r.calls().len(), 2);
+        // An exit 2 from something else is a failure, with no retry.
+        let r = FakeRunner::new()
+            .on(
+                &["bosun", "--json", "doctor", "--remote", "--all"],
+                Out::with(2, "", "bad usage"),
+            )
+            .on(&["bosun", "--json", "doctor", "--remote"], clean);
+        assert!(doctor(&r, Path::new(".")).is_err());
+        assert_eq!(r.calls().len(), 1);
+    }
+
+    #[test]
+    fn offline_exit_5_is_detected() {
+        let r = FakeRunner::new().on(
+            &["bosun"],
+            Out::with(
+                5,
+                r#"{"ok":false,"exit_code":5,"data":{"offline":true,"missing":0}}"#,
+                "",
+            ),
+        );
+        assert_eq!(doctor(&r, Path::new(".")).unwrap(), Doctor::Offline);
+    }
 }

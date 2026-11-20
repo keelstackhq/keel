@@ -107,11 +107,11 @@ every `check` only and marks work `would-run`; it stops after the first human ga
 | 1 | `preflight` | `node --version` ≥ 24, `gh auth status`, `gh api user` (login), `git --version`; repo exists (`gh repo view`); `-C` is a git checkout whose `origin` is the repo; each tool's `--version` equals its pin | install each tool not at its pin (§6) |
 | 2 | `apps` | Claude and Renovate apps installed on the repo (`gh api user/installations`, then the installation's repositories when `repository_selection` is `selected`) | none: human gate; prints the install link and polls up to `--wait` |
 | 3 | `render` | `.splice/lock.toml` exists and `Cargo.lock` exists when `Cargo.toml` does | branch (§5.1, switched before any commit); commit `keel.toml` alone (splice refuses a dirty tree); `splice pieces --json` validates piece names; `splice --json --yes new <source> . --force --piece …` (rust: `--data no_placeholder=true`); `cargo generate-lockfile` when needed; ensure `.keel/` is in `.gitignore`; commit (a lockfile-only re-run commits just `Cargo.lock`) |
-| 4 | `governance` | `.bosun/version` exists; with `plan`, `bosun plan import FILE --dry-run` reports nothing to create | `bosun init --owner <gh login> --branch <current> --no-pr` (+ `--stack rust` for the rust template); labels fallback (§10); then `bosun plan import FILE` |
+| 4 | `governance` | `.bosun/version` exists; with `plan`, `bosun plan import FILE --dry-run` has no `data.epics[]`/`data.tasks[]` item with `action: "would-create"` | `bosun init --owner <gh login> --branch <work branch> --no-pr` (+ `--stack rust` for the rust template); labels fallback (§10); then `bosun plan import FILE` |
 | 5 | `settings` | `hoist --json check` exits 0 | `hoist --json apply --yes`; hoist human steps become keel's human step |
 | 6 | `token` | `gh api repos/R/environments/ENV/secrets/NAME` succeeds | with `--token-stdin`: read stdin, `gh secret set NAME --env ENV --repo R` (value on stdin). Without: human gate with the PAT link (§7) |
 | 7 | `agent-env` | `keel.toml` `[confirmed] agent_env = true` | write `.keel/cloud-setup.sh` (§8); human gate: attach it, then `keel up --confirm agent-env` |
-| 8 | `doctor` | `bosun doctor --remote` (`--all` when supported) has no `missing` item and exits 0; a PR from the branch exists | commit, `git push -u origin <branch>` (never force), `gh pr create` |
+| 8 | `doctor` | `bosun doctor --remote` (`--all` tried first, §10) has no `missing` item (any missing item is a failed step, never a push or PR); a PR from the work branch exists. Offline doctor (exit 5, `data.offline`) is a human step: `export GH_TOKEN=$(gh auth token)`, then `keel up` | commit, `git push -u origin <branch>` (never force), `gh pr create` |
 | 9 | `merge` | the PR is merged (`gh pr view --json state,headRefOid`) | none: human gate "approve head SHA `<sha>` and merge PR #N" |
 
 ### 5.1 Branch
@@ -138,6 +138,9 @@ A non-JSON or missing output is a failed step whose detail names the command (ne
 ### 5.3 `keel doctor`
 
 Runs step 1's checks (no installs) and step 8's checks alone. Exit 0 healthy, 1 drift, 3 error.
+A human gate (for example `gh` not logged in, or offline doctor) is not exit 2 here: the exit stays
+1, and the JSON `status` is `human` with `human_step` set (drift without a human step is
+`planned`).
 
 ## 6. Pins and installs
 
@@ -188,9 +191,28 @@ is human-only (Blocked in `docs/PROGRESS.md`).
 Answered: pins (§6, hull#132 `pins.toml`), PAT secret `SPLICE_BOT_TOKEN` in `splice-bot`, proxy-CA
 hook (§8, `scripts/proxy-ca.sh install`), labels: `bosun init` creates labels and owners from the
 gh user; when its JSON has no `data.labels`, keel falls back to `gh label create … --force`. The
-rust template gets `--data no_placeholder=true` (skips `crates/common`). Still assumed, behind
-adapters:
+rust template gets `--data no_placeholder=true` (skips `crates/common`). Answered from the sources:
 
-1. `splice pieces --json` shape: assumed `{ok, command, pieces:[{id, description, multiple}]}`.
-2. `bosun doctor --all`: assumed a flag of `doctor`; keel retries without it on exit 2.
-3. `bosun plan import --dry-run` JSON: assumed `data.create` (array) — empty = done.
+- `bosun plan import --dry-run` JSON (was Q3): `data.epics[]` and `data.tasks[]`, each with an
+  `action`; keel counts `would-create`.
+- `bosun doctor` has `--full`, not `--all`. keel still tries `--all` first (the upstream bosun
+  change adds `doctor --all`) and retries without it only on exit 2 whose output mentions `--all`.
+- `bosun doctor` runs offline (exit 5, `data.offline: true`, missing 0) without `GH_TOKEN` or
+  `GITHUB_TOKEN`: keel shows a human step.
+- The pinned splice 0.6.0 has no `pieces` subcommand (its commands: new, adopt, add, update,
+  check, diff, explain, channel). Piece names are not validated up front at this pin: keel warns
+  and relies on `splice new` rejecting a bad name. Validation starts working with a splice that
+  has `pieces`.
+
+Pending upstream:
+
+- bosun 0.21.0 `init --branch B` exits 3 when `B` already exists, and keel has created the work
+  branch by then. The upstream bosun change makes init reuse the current branch. keel keeps
+  `--branch <work branch>` and maps that exit 3 to a human step: "bosun <version> cannot init on
+  an existing branch; upgrade bosun to a release where init reuses the current branch", command
+  `npm install -g @keelstackhq/bosun@latest`. keel's pin moves once that release exists.
+
+Still assumed, behind adapters:
+
+1. `splice pieces --json` shape: assumed `{ok, command, pieces:[{id, description, multiple}]}`
+   (not available at pin 0.6.0, see above).

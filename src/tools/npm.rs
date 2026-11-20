@@ -10,10 +10,10 @@ pub fn sha512_b64(bytes: &[u8]) -> String {
     STANDARD.encode(Sha512::digest(bytes))
 }
 
-/// `linux_x64` -> `linux-x64`; `macos_arm64` -> `darwin-arm64`; `win32_x64` -> `win32-x64`.
+/// `linux_x64` -> `linux-x64`, `darwin_arm64` -> `darwin-arm64` (`platform_key` already uses
+/// npm's OS names).
 pub fn npm_platform(key: &str) -> String {
     let (os, arch) = key.split_once('_').unwrap_or((key, ""));
-    let os = if os == "macos" { "darwin" } else { os };
     format!("{os}-{arch}")
 }
 
@@ -123,7 +123,7 @@ mod tests {
     #[test]
     fn platform_names() {
         assert_eq!(npm_platform("linux_x64"), "linux-x64");
-        assert_eq!(npm_platform("macos_arm64"), "darwin-arm64");
+        assert_eq!(npm_platform("darwin_arm64"), "darwin-arm64");
         assert_eq!(npm_platform("win32_x64"), "win32-x64");
     }
 }

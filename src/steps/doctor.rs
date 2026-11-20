@@ -1,6 +1,7 @@
 use super::{repo, work_branch};
 use crate::ctx::Ctx;
 use crate::error::KeelError;
+use crate::report::HumanStep;
 use crate::step::{Check, Step};
 use crate::tools::{bosun, failure, gh, git};
 
@@ -26,6 +27,32 @@ fn body() -> String {
     )
 }
 
+/// `bosun doctor --remote`: `Some` (not clean, or cannot tell) means stop; nothing may be pushed.
+fn gate(cx: &Ctx) -> Option<Check> {
+    match bosun::doctor(cx.runner, &cx.dir) {
+        Err(e) => return Some(Check::Failed(e)),
+        Ok(bosun::Doctor::Offline) => {
+            return Some(Check::Human(HumanStep {
+                id: "doctor".into(),
+                title: "bosun doctor ran offline: it needs a GitHub token in GH_TOKEN. \
+                            Export one from gh, then run `keel up` again"
+                    .into(),
+                url: String::new(),
+                command: "export GH_TOKEN=$(gh auth token)".into(),
+            }));
+        }
+        // Missing items fail whatever the PR state: never push or open a PR over them.
+        Ok(bosun::Doctor::Missing(m)) => {
+            return Some(Check::Failed(format!(
+                "bosun doctor --remote reports missing: {}",
+                m.join("; ")
+            )));
+        }
+        Ok(bosun::Doctor::Clean) => {}
+    }
+    None
+}
+
 impl Step for Doctor {
     fn id(&self) -> &'static str {
         "doctor"
@@ -33,10 +60,9 @@ impl Step for Doctor {
 
     fn check(&self, cx: &mut Ctx) -> Result<Check, KeelError> {
         repo(cx)?;
-        let missing = match bosun::doctor(cx.runner, &cx.dir) {
-            Ok(m) => m,
-            Err(e) => return Ok(Check::Failed(e)),
-        };
+        if let Some(c) = gate(cx) {
+            return Ok(c);
+        }
         let repo = repo(cx)?;
         let branch = match work_branch(cx) {
             Ok(b) => b,
@@ -44,21 +70,18 @@ impl Step for Doctor {
         };
         let pr = gh::pr_view(cx.runner, &cx.dir, &repo, &branch)
             .filter(|p| p.state == "OPEN" || p.state == "MERGED");
-        Ok(match (pr, missing.is_empty()) {
-            (Some(p), true) => {
-                Check::Done(format!("bosun doctor is clean, PR #{} exists", p.number))
-            }
-            (Some(_), false) => Check::Failed(format!(
-                "bosun doctor --remote reports missing: {}",
-                missing.join("; ")
-            )),
-            (None, _) => Check::Todo(format!("push {branch} and open a pull request")),
+        Ok(match pr {
+            Some(p) => Check::Done(format!("bosun doctor is clean, PR #{} exists", p.number)),
+            None => Check::Todo(format!("push {branch} and open a pull request")),
         })
     }
 
     fn apply(&self, cx: &mut Ctx) -> Result<Check, KeelError> {
         let repo = repo(cx)?;
         let r = cx.runner;
+        if let Some(c) = gate(cx) {
+            return Ok(c);
+        }
         let default = match gh::default_branch(r, &repo) {
             Ok(b) => b,
             Err(e) => return Ok(Check::Failed(e)),
@@ -147,10 +170,45 @@ mod tests {
     }
 
     #[test]
+    fn missing_item_without_pr_fails_and_apply_never_pushes_or_opens_a_pr() {
+        let r = fake()
+            .on(&["gh", "pr", "view"], Out::with(1, "", "none"))
+            .on(
+                &["bosun", "--json", "doctor"],
+                Out::with(1, r#"{"ok":false,"data":{"items":[{"id":"ruleset","status":"missing"}],"missing":1}}"#, ""),
+            );
+        assert!(matches!(go(&r, false), Check::Failed(m) if m.contains("ruleset")));
+        assert!(matches!(go(&r, true), Check::Failed(_)));
+        let l = lines(&r);
+        assert!(
+            !l.iter()
+                .any(|x| x.starts_with("git push") || x.starts_with("gh pr create")),
+            "{l:?}"
+        );
+    }
+
+    #[test]
+    fn offline_doctor_is_a_human_step_with_the_token_command() {
+        let r = fake().on(
+            &["bosun", "--json", "doctor"],
+            Out::with(
+                5,
+                r#"{"ok":false,"exit_code":5,"data":{"offline":true,"missing":0}}"#,
+                "",
+            ),
+        );
+        let Check::Human(h) = go(&r, false) else {
+            panic!()
+        };
+        assert_eq!(h.command, "export GH_TOKEN=$(gh auth token)");
+        assert!(h.title.contains("keel up"));
+    }
+
+    #[test]
     fn missing_item_with_pr_fails_and_all_retries_without_all_on_exit_2() {
         let r = fake()
             .on(&["gh", "pr", "view"], Out::ok(PR))
-            .on(&["bosun", "--json", "doctor", "--remote", "--all"], Out::with(2, "", "unknown flag"))
+            .on(&["bosun", "--json", "doctor", "--remote", "--all"], Out::with(2, "", "unexpected argument '--all'"))
             .on(
                 &["bosun", "--json", "doctor", "--remote"],
                 Out::with(
