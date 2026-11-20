@@ -65,6 +65,10 @@ impl Step for Render {
 
     fn check(&self, cx: &mut Ctx) -> Result<Check, KeelError> {
         let lock = cx.dir.join(".splice/lock.toml").is_file();
+        // A saved list means a render whose commit has not happened yet (any template).
+        if lock && cx.dir.join(LIST).is_file() {
+            return Ok(Check::Todo("a previous render is not committed yet".into()));
+        }
         let needs_cargo_lock =
             cx.dir.join("Cargo.toml").is_file() && !cx.dir.join("Cargo.lock").is_file();
         Ok(match (lock, needs_cargo_lock) {
@@ -453,6 +457,63 @@ mod tests {
     fn lock(d: &std::path::Path) {
         std::fs::create_dir(d.join(".splice")).unwrap();
         std::fs::write(d.join(".splice/lock.toml"), "").unwrap();
+    }
+
+    fn check(r: &FakeRunner, dir: &std::path::Path, tpl: &str) -> Check {
+        let mut cx = ctx(
+            r,
+            dir.to_path_buf(),
+            manifest(tpl),
+            PINS,
+            Opts::default(),
+            &no_sleep,
+            &no_stdin,
+        );
+        Render.check(&mut cx).unwrap()
+    }
+
+    #[test]
+    fn a_failed_render_commit_resumes_even_when_cargo_lock_exists() {
+        for tpl in ["rust", "ts"] {
+            let d = tempfile::tempdir().unwrap();
+            // First run: splice renders, cargo writes Cargo.lock, the render commit fails.
+            let r = fake().on(
+                &["git", "commit", "-m", &format!("keel: render {tpl}")],
+                Out::with(1, "", "commit failed"),
+            );
+            assert!(
+                matches!(apply(&r, d.path(), tpl), Check::Failed(_)),
+                "{tpl}"
+            );
+            assert!(d.path().join(LIST).is_file(), "{tpl}: the list survives");
+            // What splice and cargo wrote on disk.
+            lock(d.path());
+            if tpl == "rust" {
+                std::fs::write(d.path().join("Cargo.toml"), "").unwrap();
+                std::fs::write(d.path().join("Cargo.lock"), "").unwrap();
+            }
+            // Re-run: not done until the render is committed.
+            assert!(
+                matches!(check(&fake(), d.path(), tpl), Check::Todo(_)),
+                "{tpl}"
+            );
+            let r = fake();
+            let _ = apply(&r, d.path(), tpl);
+            let l = lines(&r);
+            assert!(
+                l.iter().any(
+                    |x| x.starts_with(&format!("git commit -m keel: render {tpl} --"))
+                        && x.contains("src/main.rs")
+                ),
+                "{tpl}: {l:?}"
+            );
+            assert!(!l.iter().any(|x| x.starts_with("splice")), "{tpl}: {l:?}");
+            assert!(!d.path().join(LIST).exists(), "{tpl}");
+            assert!(
+                matches!(check(&fake(), d.path(), tpl), Check::Done(_)),
+                "{tpl}"
+            );
+        }
     }
 
     #[test]
