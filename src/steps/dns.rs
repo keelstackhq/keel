@@ -125,7 +125,7 @@ impl Step for Dns {
         {
             return Ok(Check::Failed(e));
         }
-        let res = hoist::apply_cloudflare(cx.runner, &cx.dir, &hoist::DNS, &f.app);
+        let res = hoist::apply_cloudflare(cx.runner, &cx.dir, &f.app);
         match hoist_check(res, self.id(), SECTION, "applied") {
             Check::Done(_) => self.check(cx),
             other => Ok(other),
@@ -363,8 +363,14 @@ mod tests {
             (h.id.as_str(), h.title.as_str()),
             ("dns", "Add the A record")
         );
-        let other = r#"{"items":[],"human_steps":[{"id":"pages:x","title":"t","url":""}]}"#;
-        assert!(matches!(chk(Out::with(2, other, "")), Check::Done(_)));
+        let other = r#"{"items":[],"human_steps":[{"id":"pages:x","title":"t","url":"u"}]}"#;
+        let Check::Human(h) = chk(Out::with(2, other, "")) else {
+            panic!()
+        };
+        assert_eq!(
+            (h.id.as_str(), h.title.as_str(), h.command.as_str()),
+            ("dns", "t", "keel up")
+        );
     }
 
     #[test]

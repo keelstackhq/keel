@@ -61,23 +61,19 @@ fn cmd(base: &[&str], extra: Vec<String>, dir: &Path) -> Cmd {
 }
 
 /// The part of the `cloudflare` area one step owns: hoist has no sub-areas, so a step reads
-/// its own JSON items (by `kind`) and human steps (by `id` prefix) out of the whole area.
+/// its own JSON items (by `kind`) out of the whole area. Exit 2 is `human_steps[0]` for both.
 pub struct Slice {
     pub kinds: &'static [&'static str],
-    pub human_prefixes: &'static [&'static str],
 }
 
-/// `[cloudflare.dns]`: records `dns_record`; human steps `dns:<name> <TYPE>`, `dns-cname:<host>`.
+/// `[cloudflare.dns]`: items `dns_record`.
 pub const DNS: Slice = Slice {
     kinds: &["dns_record"],
-    human_prefixes: &["dns:", "dns-cname:"],
 };
 
-/// `[cloudflare.r2]`: items `r2_bucket`, `r2_lifecycle`, `r2_token`. No human step id is
-/// relayed for it, so none is claimed.
+/// `[cloudflare.r2]`: items `r2_bucket`, `r2_lifecycle`, `r2_token`.
 pub const R2: Slice = Slice {
     kinds: &["r2_bucket", "r2_lifecycle", "r2_token"],
-    human_prefixes: &[],
 };
 
 /// `hoist --json check --area github --area npm --area crates --area release`. A hoist that
@@ -122,26 +118,14 @@ pub fn apply_settings(r: &dyn Runner, dir: &Path) -> Res {
     apply_res(&c, &o)
 }
 
-/// An item is in drift unless its `ok` is true or its `action` or `status` is "ok" or "noop".
-/// Assumed from hoist's item shape until the exact field is relayed.
+/// An item is done only when its `action` (create|update|ok|drift|pending|unknown) is "ok".
 fn in_drift(item: &Value) -> bool {
-    let word = |k: &str| matches!(item[k].as_str(), Some("ok" | "noop"));
-    !(item["ok"].as_bool() == Some(true) || word("action") || word("status"))
-}
-
-/// The first human step of `v` whose id starts with one of the slice's prefixes.
-fn slice_human(v: &Value, c: &Cmd, s: &Slice) -> Option<Res> {
-    let h = v["human_steps"].as_array()?.iter().find(|h| {
-        h["id"]
-            .as_str()
-            .is_some_and(|id| s.human_prefixes.iter().any(|p| id.starts_with(p)))
-    })?;
-    Some(human_res(v, h, c))
+    item["action"].as_str() != Some("ok")
 }
 
 /// `hoist --json check --area cloudflare`, read for one [`Slice`]: exit 0 is done; exit 1 is
 /// drift only when an item of the slice's kinds is in drift (see [`in_drift`]), else done; exit 2
-/// is the first human step of the slice, else done. A hoist that rejects `--area` is `Upgrade`.
+/// is `human_steps[0]` (never done). A hoist that rejects `--area` is `Upgrade`.
 pub fn check_cloudflare(r: &dyn Runner, dir: &Path, s: &Slice) -> Res {
     let c = cmd(&["--json", "check"], area_args(&[CLOUDFLARE]), dir);
     let o = r.run(&c);
@@ -162,7 +146,7 @@ pub fn check_cloudflare(r: &dyn Runner, dir: &Path, s: &Slice) -> Res {
                 });
                 if drift { Res::Drift } else { Res::Ok }
             }
-            Ok(v) => slice_human(&v, &c, s).unwrap_or(Res::Ok),
+            Ok(v) => human_res(&v, &v["human_steps"][0], &c),
         },
         _ => Res::Failed(failure(&c, &o)),
     }
@@ -170,8 +154,8 @@ pub fn check_cloudflare(r: &dyn Runner, dir: &Path, s: &Slice) -> Res {
 
 /// `hoist --json apply --yes --area cloudflare --secrets-to fly:APP`. The sink is always passed:
 /// the area also mints the R2 key when `[cloudflare.r2]` exists, and minting without a sink
-/// exits 3. Exit 2 is the slice's first human step, else done.
-pub fn apply_cloudflare(r: &dyn Runner, dir: &Path, s: &Slice, fly_app: &str) -> Res {
+/// exits 3. Exit 2 is `human_steps[0]`.
+pub fn apply_cloudflare(r: &dyn Runner, dir: &Path, fly_app: &str) -> Res {
     let mut extra = area_args(&[CLOUDFLARE]);
     extra.extend(["--secrets-to".to_string(), format!("fly:{fly_app}")]);
     let c = cmd(&["--json", "apply", "--yes"], extra, dir);
@@ -181,7 +165,7 @@ pub fn apply_cloudflare(r: &dyn Runner, dir: &Path, s: &Slice, fly_app: &str) ->
     }
     match o.code {
         2 => match envelope(&c, &o) {
-            Ok(v) => slice_human(&v, &c, s).unwrap_or(Res::Ok),
+            Ok(v) => human_res(&v, &v["human_steps"][0], &c),
             Err(e) => Res::Failed(e),
         },
         _ => apply_res(&c, &o),
@@ -222,6 +206,50 @@ pub const FILE: &str = "hoist.toml";
 pub fn has_section(dir: &Path, header: &str) -> bool {
     std::fs::read_to_string(dir.join(FILE))
         .is_ok_and(|t| t.lines().any(|l| l.trim() == format!("[{header}]")))
+}
+
+/// The line range of the `[cloudflare]` table: (index of header, index after its last line).
+fn cloudflare_table(lines: &[&str]) -> Option<(usize, usize)> {
+    let h = lines.iter().position(|l| l.trim() == "[cloudflare]")?;
+    let end = lines[h + 1..]
+        .iter()
+        .position(|l| l.trim_start().starts_with('['))
+        .map_or(lines.len(), |n| h + 1 + n);
+    Some((h, end))
+}
+
+fn is_account_id(line: &str) -> bool {
+    line.trim_start()
+        .strip_prefix("account_id")
+        .is_some_and(|r| r.trim_start().starts_with('='))
+}
+
+/// Whether `hoist.toml` has `account_id` in its top-level `[cloudflare]` table.
+pub fn has_account_id(dir: &Path) -> bool {
+    let t = std::fs::read_to_string(dir.join(FILE)).unwrap_or_default();
+    let lines: Vec<&str> = t.lines().collect();
+    cloudflare_table(&lines).is_some_and(|(h, e)| lines[h + 1..e].iter().any(|l| is_account_id(l)))
+}
+
+/// Make sure `hoist.toml` has `[cloudflare] account_id`: append the table when it has no
+/// `[cloudflare]` header, insert the line after the header when the table lacks the key, else
+/// leave the file alone. Text edits only.
+pub fn ensure_account_id(dir: &Path, id: &str) -> Result<(), String> {
+    let path = dir.join(FILE);
+    let have = std::fs::read_to_string(&path).unwrap_or_default();
+    let lines: Vec<&str> = have.lines().collect();
+    let line = format!("account_id = \"{id}\"");
+    match cloudflare_table(&lines) {
+        None => append_section(dir, &format!("[cloudflare]\n{line}\n")),
+        Some((h, e)) if !lines[h + 1..e].iter().any(|l| is_account_id(l)) => {
+            let mut out: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+            out.insert(h + 1, line);
+            let mut t = out.join("\n");
+            t.push('\n');
+            std::fs::write(&path, t).map_err(|e| format!("cannot write {FILE}: {e}"))
+        }
+        Some(_) => Ok(()),
+    }
 }
 
 /// Append `text` (a whole table) to `hoist.toml`, creating the file when it is missing.
@@ -294,10 +322,13 @@ mod tests {
         let drift = r#"{"items":[{"kind":"r2_bucket","key":"b","action":"create"},{"kind":"dns_record","key":"h A 1.2.3.4","action":"ok"}]}"#;
         assert!(matches!(chk(Out::with(1, drift, ""), &DNS), Res::Ok));
         assert!(matches!(chk(Out::with(1, drift, ""), &R2), Res::Drift));
-        let d2 = r#"{"items":[{"kind":"dns_record","key":"h A 1.2.3.4","ok":false}]}"#;
-        assert!(matches!(chk(Out::with(1, d2, ""), &DNS), Res::Drift));
-        let n = r#"{"items":[{"kind":"dns_record","key":"h A 1.2.3.4","status":"noop"}]}"#;
-        assert!(matches!(chk(Out::with(1, n, ""), &DNS), Res::Ok));
+        for a in ["create", "update", "drift", "pending", "unknown"] {
+            let d = format!(r#"{{"items":[{{"kind":"dns_record","key":"k","action":"{a}"}}]}}"#);
+            assert!(matches!(chk(Out::with(1, &d, ""), &DNS), Res::Drift), "{a}");
+        }
+        let n =
+            r#"{"items":[{"kind":"dns_record","key":"h A 1.2.3.4","status":"noop","ok":true}]}"#;
+        assert!(matches!(chk(Out::with(1, n, ""), &DNS), Res::Drift));
         assert!(matches!(
             chk(Out::with(1, "boom", ""), &DNS),
             Res::Failed(_)
@@ -307,21 +338,26 @@ mod tests {
             chk(Out::with(2, "", "unexpected argument '--area'"), &DNS),
             Res::Upgrade
         ));
-        let h = r#"{"items":[],"human_steps":[{"id":"pages:x","title":"other","url":""},{"id":"dns-cname:app.example.com","title":"Add a CNAME","url":"u"}]}"#;
-        match chk(Out::with(2, h, ""), &DNS) {
-            Res::Human { title, url, .. } => {
-                assert_eq!((title.as_str(), url.as_str()), ("Add a CNAME", "u"))
+        let h = r#"{"items":[],"human_steps":[{"id":"cloudflare:token","title":"Add a token","url":"u"},{"id":"dns-cname:x","title":"second","url":""}]}"#;
+        for s in [&DNS, &R2] {
+            match chk(Out::with(2, h, ""), s) {
+                Res::Human { title, url, .. } => {
+                    assert_eq!((title.as_str(), url.as_str()), ("Add a token", "u"))
+                }
+                _ => panic!(),
             }
-            _ => panic!(),
         }
-        assert!(matches!(chk(Out::with(2, h, ""), &R2), Res::Ok));
+        assert!(matches!(
+            chk(Out::with(2, r#"{"items":[]}"#, ""), &DNS),
+            Res::Failed(_)
+        ));
     }
 
     #[test]
     fn cloudflare_apply_passes_the_sink_and_reads_exit_codes() {
         let run = |out: Out| {
             let r = FakeRunner::new().on(&["hoist"], out);
-            let res = apply_cloudflare(&r, Path::new("."), &DNS, "app");
+            let res = apply_cloudflare(&r, Path::new("."), "app");
             assert_eq!(
                 lines(&r),
                 ["hoist --json apply --yes --area cloudflare --secrets-to fly:app"]
@@ -336,6 +372,35 @@ mod tests {
         ));
         let h = r#"{"items":[],"human_steps":[{"id":"dns:app.example.com A","title":"Add A","url":""}]}"#;
         assert!(matches!(run(Out::with(2, h, "")), Res::Human { .. }));
+    }
+
+    #[test]
+    fn ensure_account_id_appends_inserts_or_leaves_the_cloudflare_table() {
+        let d = tempfile::tempdir().unwrap();
+        let rd = || std::fs::read_to_string(d.path().join(FILE)).unwrap();
+        assert!(!has_account_id(d.path()));
+        ensure_account_id(d.path(), "A1").unwrap();
+        assert_eq!(rd(), "[cloudflare]\naccount_id = \"A1\"\n");
+        assert!(has_account_id(d.path()));
+        ensure_account_id(d.path(), "B2").unwrap();
+        assert_eq!(rd(), "[cloudflare]\naccount_id = \"A1\"\n");
+        std::fs::write(d.path().join(FILE), "[github]\nx = 1\n").unwrap();
+        ensure_account_id(d.path(), "A1").unwrap();
+        assert_eq!(
+            rd(),
+            "[github]\nx = 1\n\n[cloudflare]\naccount_id = \"A1\"\n"
+        );
+        let t = "# c\n[cloudflare]\n# keep\npages = 1\n\n[cloudflare.dns]\nzone = \"a.io\"\n";
+        std::fs::write(d.path().join(FILE), t).unwrap();
+        assert!(!has_account_id(d.path()));
+        ensure_account_id(d.path(), "A1").unwrap();
+        assert_eq!(
+            rd(),
+            "# c\n[cloudflare]\naccount_id = \"A1\"\n# keep\npages = 1\n\n[cloudflare.dns]\nzone = \"a.io\"\n"
+        );
+        // An account_id in a sub-table is not the top-level one.
+        std::fs::write(d.path().join(FILE), "[cloudflare.r2]\naccount_id = \"x\"\n").unwrap();
+        assert!(!has_account_id(d.path()));
     }
 
     #[test]

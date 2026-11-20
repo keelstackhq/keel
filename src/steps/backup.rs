@@ -13,27 +13,37 @@ const SECTION: &str = "cloudflare.r2";
 /// `[cloudflare.r2]`: hoist makes the bucket and its lifecycle rule and a key with a fixed scope,
 /// and delivers R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET and R2_ENDPOINT to the fly app
 /// (`apply --secrets-to fly:APP`; keel does no name mapping). The key never passes through keel.
-/// `account_id` is assumed to live under `[cloudflare.r2]` until hoist relays its placement.
-fn section_text(bucket: &str, days: u32, account_id: &str) -> String {
-    format!(
-        "[{SECTION}]\nbucket = \"{bucket}\"\nretention_days = {days}\naccount_id = \"{account_id}\"\n"
-    )
+/// The account id is not a key of this table (see [`account`]).
+fn section_text(bucket: &str, days: u32) -> String {
+    format!("[{SECTION}]\nbucket = \"{bucket}\"\nretention_days = {days}\n")
 }
 
-/// `[backup] account_id`, else `CLOUDFLARE_ACCOUNT_ID`; the human step when neither is set.
-fn account_id(cx: &Ctx, b: &B) -> Result<String, Check> {
-    b.account_id
-        .clone()
-        .filter(|v| !v.trim().is_empty())
-        .or_else(|| cx.opts.cloudflare_account_id.clone())
-        .ok_or_else(|| {
-            Check::Human(HumanStep {
-                id: "backup".into(),
-                title: "Set [backup] account_id (Cloudflare account id) in keel.toml".into(),
-                url: "https://dash.cloudflare.com/".into(),
-                command: "keel up".into(),
-            })
-        })
+enum Account {
+    /// hoist reads `CLOUDFLARE_ACCOUNT_ID` itself, or `hoist.toml` already has it.
+    Have,
+    /// Write `[cloudflare] account_id` from `[backup] account_id`.
+    Write(String),
+}
+
+/// Env `CLOUDFLARE_ACCOUNT_ID` (nothing to write), else `[backup] account_id` (to write into
+/// `[cloudflare]`), else the `[cloudflare] account_id` already in `hoist.toml`; else the human step.
+fn account(cx: &Ctx, b: &B) -> Result<Account, Check> {
+    let set = |v: &Option<String>| v.clone().filter(|v| !v.trim().is_empty());
+    if set(&cx.opts.cloudflare_account_id).is_some() {
+        return Ok(Account::Have);
+    }
+    if let Some(id) = set(&b.account_id) {
+        return Ok(Account::Write(id));
+    }
+    if hoist::has_account_id(&cx.dir) {
+        return Ok(Account::Have);
+    }
+    Err(Check::Human(HumanStep {
+        id: "backup".into(),
+        title: "Set [backup] account_id (Cloudflare account id) in keel.toml".into(),
+        url: "https://dash.cloudflare.com/".into(),
+        command: "keel up".into(),
+    }))
 }
 
 impl Step for Backup {
@@ -60,14 +70,14 @@ impl Step for Backup {
             let what = format!("create the R2 bucket {} by hand", B::bucket(&f.app));
             return Ok(cloudflare_token_step(self.id(), &what));
         }
+        if let Err(h) = account(cx, &b) {
+            return Ok(h);
+        }
         if !hoist::has_section(&cx.dir, SECTION) {
-            return Ok(match account_id(cx, &b) {
-                Err(h) => h,
-                Ok(_) => Check::Todo(format!(
-                    "add [{SECTION}] to hoist.toml and apply it (bucket {})",
-                    B::bucket(&f.app)
-                )),
-            });
+            return Ok(Check::Todo(format!(
+                "add [{SECTION}] to hoist.toml and apply it (bucket {})",
+                B::bucket(&f.app)
+            )));
         }
         let res = hoist::check_cloudflare(cx.runner, &cx.dir, &hoist::R2);
         Ok(hoist_check(
@@ -82,17 +92,22 @@ impl Step for Backup {
         let (Some(b), Some(f)) = (cx.manifest.backup.clone(), cx.manifest.fly().cloned()) else {
             return self.check(cx);
         };
+        match account(cx, &b) {
+            Err(h) => return Ok(h),
+            Ok(Account::Write(id)) => {
+                if let Err(e) = hoist::ensure_account_id(&cx.dir, &id) {
+                    return Ok(Check::Failed(e));
+                }
+            }
+            Ok(Account::Have) => {}
+        }
         if !hoist::has_section(&cx.dir, SECTION) {
-            let id = match account_id(cx, &b) {
-                Ok(id) => id,
-                Err(h) => return Ok(h),
-            };
-            let text = section_text(&B::bucket(&f.app), b.retention_days, &id);
+            let text = section_text(&B::bucket(&f.app), b.retention_days);
             if let Err(e) = hoist::append_section(&cx.dir, &text) {
                 return Ok(Check::Failed(e));
             }
         }
-        let res = hoist::apply_cloudflare(cx.runner, &cx.dir, &hoist::R2, &f.app);
+        let res = hoist::apply_cloudflare(cx.runner, &cx.dir, &f.app);
         match hoist_check(res, self.id(), SECTION, "applied") {
             Check::Done(_) => self.check(cx),
             other => Ok(other),
@@ -208,7 +223,7 @@ mod tests {
         let t = std::fs::read_to_string(d.path().join("hoist.toml")).unwrap();
         assert_eq!(
             t,
-            "[cloudflare.r2]\nbucket = \"app-backup\"\nretention_days = 14\naccount_id = \"acc123\"\n"
+            "[cloudflare]\naccount_id = \"acc123\"\n\n[cloudflare.r2]\nbucket = \"app-backup\"\nretention_days = 14\n"
         );
         assert_eq!(
             r.calls()[0].line(),
@@ -264,10 +279,21 @@ mod tests {
             ..Opts::default()
         };
         let r = FakeRunner::new().on(&["hoist"], Out::ok(r#"{"ok":true,"items":[]}"#));
+        let m2 = m.clone();
         let mut cx = ctx(&r, d.path().into(), m, PINS, opts, &no_sleep, &no_stdin);
         Backup.apply(&mut cx).unwrap();
         let t = std::fs::read_to_string(d.path().join("hoist.toml")).unwrap();
-        assert!(t.contains("account_id = \"envacc\""), "{t}");
+        assert!(!t.contains("account_id"), "{t}");
+        assert!(t.contains("[cloudflare.r2]"), "{t}");
+        // hoist.toml's own [cloudflare] account_id also satisfies it.
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(
+            d.path().join("hoist.toml"),
+            "[cloudflare]\naccount_id = \"x\"\n",
+        )
+        .unwrap();
+        let r = FakeRunner::new().on(&["hoist"], Out::ok(r#"{"ok":true,"items":[]}"#));
+        assert!(matches!(run(&r, d.path(), m2, true, true), Check::Done(_)));
     }
 
     #[test]
@@ -288,6 +314,15 @@ mod tests {
         };
         let dns = r#"{"items":[{"kind":"dns_record","key":"k","action":"create"}]}"#;
         assert!(matches!(chk(Out::with(1, dns, "")), Check::Done(_)));
+        let human =
+            r#"{"items":[],"human_steps":[{"id":"r2:x","title":"Make a token","url":"u"}]}"#;
+        let Check::Human(h) = chk(Out::with(2, human, "")) else {
+            panic!()
+        };
+        assert_eq!(
+            (h.id.as_str(), h.title.as_str()),
+            ("backup", "Make a token")
+        );
         let tok =
             r#"{"items":[{"kind":"r2_token","key":"hoist:o/r:r2:app-backup","action":"create"}]}"#;
         assert!(matches!(chk(Out::with(1, tok, "")), Check::Todo(_)));
