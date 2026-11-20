@@ -70,6 +70,12 @@ impl Step for Dns {
         let Some(f) = cx.manifest.fly().cloned() else {
             return Ok(Check::Done("no [deploy.fly]".into()));
         };
+        if cx.manifest.confirmed.dns {
+            return Ok(Check::Done(format!(
+                "DNS records for {} confirmed as added by hand",
+                f.host
+            )));
+        }
         let recs = match self.records(cx) {
             Ok(r) => r,
             Err(Check::Todo(_)) if f.dns == Provider::None => {
@@ -220,6 +226,18 @@ mod tests {
                 && h.title.contains("AAAA app.example.com 2a09::1")
         );
         assert!(h.command.contains("CLOUDFLARE_API_TOKEN") && h.command.contains("keel up"));
+        assert!(h.command.contains("keel up --confirm dns"), "{}", h.command);
+    }
+
+    #[test]
+    fn confirmed_dns_is_done_without_a_token_or_fly_ips() {
+        let d = tempfile::tempdir().unwrap();
+        let mut m = cf_manifest();
+        m.confirmed.dns = true;
+        let r = FakeRunner::new();
+        let c = run(&r, d.path(), m, false, false);
+        assert!(matches!(c, Check::Done(m) if m.contains("confirmed")));
+        assert!(r.calls().is_empty());
     }
 
     #[test]

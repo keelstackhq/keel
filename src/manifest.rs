@@ -81,6 +81,12 @@ fn default_retention() -> u32 {
 pub struct Confirmed {
     #[serde(default)]
     pub agent_env: bool,
+    /// The DNS records were added by hand (`--confirm dns`).
+    #[serde(default)]
+    pub dns: bool,
+    /// The backup bucket was created by hand (`--confirm backup`).
+    #[serde(default)]
+    pub backup: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -238,9 +244,17 @@ impl Manifest {
                     changed |= !self.confirmed.agent_env;
                     self.confirmed.agent_env = true;
                 }
+                "dns" => {
+                    changed |= !self.confirmed.dns;
+                    self.confirmed.dns = true;
+                }
+                "backup" => {
+                    changed |= !self.confirmed.backup;
+                    self.confirmed.backup = true;
+                }
                 other => {
                     return Err(KeelError::Usage(format!(
-                        "--confirm {other}: unknown step; the only step that takes it is `agent-env`"
+                        "--confirm {other}: unknown step; the steps that take it are `agent-env`, `dns` and `backup`"
                     )));
                 }
             }
@@ -433,6 +447,14 @@ mod tests {
             .unwrap()
         );
         assert!(m.confirmed.agent_env);
+        assert!(
+            m.merge_flags(&UpArgs {
+                confirm: vec!["dns".into(), "backup".into()],
+                ..args()
+            })
+            .unwrap()
+        );
+        assert!(m.confirmed.dns && m.confirmed.backup);
         assert!(
             m.merge_flags(&UpArgs {
                 confirm: vec!["merge".into()],

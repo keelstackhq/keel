@@ -74,7 +74,9 @@ pub(crate) fn cloudflare_token_step(id: &str, what: &str) -> Check {
         id: id.into(),
         title: format!("Set CLOUDFLARE_API_TOKEN or {what}"),
         url: "https://dash.cloudflare.com/profile/api-tokens".into(),
-        command: "export CLOUDFLARE_API_TOKEN=... then keel up".into(),
+        command: format!(
+            "export CLOUDFLARE_API_TOKEN=... then keel up (or, once done by hand: keel up --confirm {id})"
+        ),
     })
 }
 

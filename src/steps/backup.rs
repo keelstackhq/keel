@@ -26,6 +26,11 @@ impl Step for Backup {
         let (Some(b), Some(f)) = (cx.manifest.backup.clone(), cx.manifest.fly().cloned()) else {
             return Ok(Check::Done("no [backup]".into()));
         };
+        if cx.manifest.confirmed.backup {
+            return Ok(Check::Done(
+                "backup bucket confirmed as created by hand".into(),
+            ));
+        }
         if b.provider == Provider::S3 {
             return Ok(Check::Done(format!(
                 "s3 backup is not automated: create the bucket and set the secrets on fly app {} by hand",
@@ -143,6 +148,20 @@ mod tests {
             h.title
         );
         assert_eq!(h.id, "backup");
+        assert!(
+            h.command.contains("keel up --confirm backup"),
+            "{}",
+            h.command
+        );
+    }
+
+    #[test]
+    fn confirmed_backup_is_done() {
+        let d = tempfile::tempdir().unwrap();
+        let mut m = with_backup(Provider::R2);
+        m.confirmed.backup = true;
+        let c = run(&FakeRunner::new(), d.path(), m, false, false);
+        assert!(matches!(c, Check::Done(m) if m.contains("confirmed")));
     }
 
     #[test]
