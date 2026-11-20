@@ -25,7 +25,8 @@ pub fn cert_exists(r: &dyn Runner, dir: &Path, app: &str, host: &str) -> bool {
     ok(r, dir, &["certs", "show", host, "--app", app, "--json"])
 }
 
-/// Addresses from `fly ips list --app APP --json`: a JSON array of `{Address, Type}`.
+/// Addresses from `fly ips list --app APP --json`: a JSON array of `{Address, Type}`. `v4` is the
+/// A-record target: a dedicated v4 when there is one, else the shared v4 (Fly's default).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Ips {
     pub v4: Vec<String>,
@@ -35,6 +36,7 @@ pub struct Ips {
 pub fn parse_ips(stdout: &str) -> Option<Ips> {
     let v: Value = serde_json::from_str(stdout.trim()).ok()?;
     let mut ips = Ips::default();
+    let mut shared = Vec::new();
     for i in v.as_array()? {
         let (Some(a), Some(t)) = (i["Address"].as_str(), i["Type"].as_str()) else {
             continue;
@@ -42,8 +44,12 @@ pub fn parse_ips(stdout: &str) -> Option<Ips> {
         match t {
             "v4" => ips.v4.push(a.to_string()),
             "v6" => ips.v6.push(a.to_string()),
-            _ => {} // shared_v4 and private addresses are not DNS targets
+            "shared_v4" => shared.push(a.to_string()),
+            _ => {} // private addresses are not DNS targets
         }
+    }
+    if ips.v4.is_empty() {
+        ips.v4 = shared;
     }
     Some(ips)
 }
@@ -78,6 +84,18 @@ pub fn set_gh_secret(r: &dyn Runner, dir: &Path, app: &str, env: &str) -> Out {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dedicated_v4_wins_else_shared_v4_is_the_a_target() {
+        let ips = parse_ips(
+            r#"[{"Address":"9.9.9.9","Type":"shared_v4"},{"Address":"2a09::1","Type":"v6"}]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            (ips.v4, ips.v6),
+            (vec!["9.9.9.9".to_string()], vec!["2a09::1".to_string()])
+        );
+    }
 
     #[test]
     fn parses_v4_and_v6_only() {

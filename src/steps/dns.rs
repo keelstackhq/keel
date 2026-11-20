@@ -78,10 +78,11 @@ impl Step for Dns {
         }
         let recs = match self.records(cx) {
             Ok(r) => r,
-            Err(Check::Todo(_)) if f.dns == Provider::None => {
+            // `dns = "none"` is never a failure: the records are the user's to add.
+            Err(_) if f.dns == Provider::None => {
                 return Ok(Check::Done(format!(
-                    "add an A and an AAAA record for {} at your DNS provider (pointing at the fly app's IPs)",
-                    f.host
+                    "could not read the fly app's IPs; run `fly ips list --app {}` and add A/AAAA records for {} at your DNS provider",
+                    f.app, f.host
                 )));
             }
             Err(c) => return Ok(c),
@@ -209,6 +210,30 @@ mod tests {
             &no_stdin,
         );
         assert!(matches!(Dns.check(&mut cx).unwrap(), Check::Done(_)));
+    }
+
+    #[test]
+    fn provider_none_is_done_when_the_ips_cannot_be_read() {
+        let d = tempfile::tempdir().unwrap();
+        for r in [
+            FakeRunner::new().on(&["fly", "ips", "list"], Out::with(1, "", "no such app")),
+            FakeRunner::new().on(&["fly", "ips", "list"], Out::ok("[]")),
+        ] {
+            let Check::Done(m) = run(&r, d.path(), fly_manifest(), false, false) else {
+                panic!()
+            };
+            assert!(
+                m.contains("fly ips list --app app")
+                    && m.contains("A/AAAA records for app.example.com"),
+                "{m}"
+            );
+        }
+        // Cloudflare still fails: it cannot write records without addresses.
+        let r = FakeRunner::new().on(&["fly", "ips", "list"], Out::ok("[]"));
+        assert!(matches!(
+            run(&r, d.path(), cf_manifest(), true, false),
+            Check::Failed(_)
+        ));
     }
 
     #[test]

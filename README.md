@@ -40,7 +40,7 @@ Global flags: `-C DIR` (checkout, default `.`), `--json`, `-v`. `up` and `plan` 
 | 6 | token | stores the bot PAT as an environment secret (human gate) |
 | 7 | agent-env | writes `.keel/cloud-setup.sh` for the cloud environment (human gate) |
 | 8 | deploy | `[deploy.fly]`: runs the hull `scripts/fly-setup.sh` (app, volume, secrets, certificate) and stores the production deploy token (needs `fly auth login`) |
-| 9 | dns | A/AAAA records for the host, through hoist `[cloudflare.dns]` when `dns = "cloudflare"` and `CLOUDFLARE_API_TOKEN` is set; else it lists the records to add; `keel up --confirm dns` records that you added them |
+| 9 | dns | A/AAAA records for the host, through hoist `[cloudflare.dns]` when `dns = "cloudflare"` and `CLOUDFLARE_API_TOKEN` is set; else it lists the records to add (a shared v4 is used when the app has no dedicated one; with `dns = "none"` the step never fails); `keel up --confirm dns` records that you added them |
 | 10 | backup | `[backup]`: R2 bucket with a lifecycle rule and a scoped key delivered to the fly app by hoist (`provider = "r2"`); `keel up --confirm backup` records a bucket made by hand |
 | 11 | doctor | `bosun doctor --remote`, push the branch, open the PR |
 | 12 | merge | a human approves and merges the PR (human gate) |
