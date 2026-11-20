@@ -106,8 +106,8 @@ every `check` only and marks work `would-run`; it stops after the first human ga
 |---|----|-------------------|-------|
 | 1 | `preflight` | `node --version` ≥ 24, `gh auth status`, `gh api user` (login), `git --version`; repo exists (`gh repo view`); `-C` is a git checkout whose `origin` is the repo; each tool's `--version` equals its pin | install each tool not at its pin (§6) |
 | 2 | `apps` | Claude and Renovate apps installed on the repo (`gh api user/installations`, then the installation's repositories when `repository_selection` is `selected`) | none: human gate; prints the install link and polls up to `--wait` |
-| 3 | `render` | `.splice/lock.toml` exists and `Cargo.lock` exists when `Cargo.toml` does | branch (§5.1); `splice pieces --json` validates piece names; `splice --json --yes new <source> . --piece …`; `cargo generate-lockfile` when needed; commit |
-| 4 | `governance` | `.bosun/version` exists; with `plan`, `bosun plan import FILE --dry-run` reports nothing to create | `bosun init --owner <gh login> --branch <current> --no-pr` (+ `--stack rust` for the rust template); then `bosun plan import FILE` |
+| 3 | `render` | `.splice/lock.toml` exists and `Cargo.lock` exists when `Cargo.toml` does | branch (§5.1); `splice pieces --json` validates piece names; `splice --json --yes new <source> . --piece …` (rust: `--data no_placeholder=true`); `cargo generate-lockfile` when needed; commit |
+| 4 | `governance` | `.bosun/version` exists; with `plan`, `bosun plan import FILE --dry-run` reports nothing to create | `bosun init --owner <gh login> --branch <current> --no-pr` (+ `--stack rust` for the rust template); labels fallback (§10); then `bosun plan import FILE` |
 | 5 | `settings` | `hoist --json check` exits 0 | `hoist --json apply --yes`; hoist human steps become keel's human step |
 | 6 | `token` | `gh api repos/R/environments/ENV/secrets/NAME` succeeds | with `--token-stdin`: read stdin, `gh secret set NAME --env ENV --repo R` (value on stdin). Without: human gate with the PAT link (§7) |
 | 7 | `agent-env` | `keel.toml` `[confirmed] agent_env = true` | write `.keel/cloud-setup.sh` (§8); human gate: attach it, then `keel up --confirm agent-env` |
@@ -135,19 +135,15 @@ Runs step 1's checks (no installs) and step 8's checks alone. Exit 0 healthy, 1 
 
 ## 6. Pins and installs
 
-The pins file has the format of the bosun channel's `docs/setup-script.sh` pin block (shell
-`KEY=VALUE`, `#` comments), so the same file can be sourced by a shell script:
-
-```
-SPLICE_VERSION=0.6.0
-SPLICE_SHA512=<npm dist.integrity of @keelstackhq/splice, base64>
-SPLICE_LINUX_X64_SHA512=<…-linux-x64>
-SPLICE_LINUX_ARM64_SHA512=<…-linux-arm64>
-```
-
-for `SPLICE`, `BOSUN`, `HOIST`, `BERTH` (other keys ignored). keel embeds a default (`pins.env`,
-compiled in); `KEEL_PINS=FILE` overrides it. *Open: hull is adding a pins file; when its format
-lands, `src/pins.rs` reads it and the embedded default follows.*
+Versions follow hull's `pins.toml` (hull#132): a generated repo has `pins.toml` at its root with
+one `[pins]` table of exact string versions (`rust`, `nextest`, `cargo_deny`, `splice`, `bosun`,
+`hoist`; keys `[a-z_][a-z0-9_]*`). keel embeds a default (`src/pins.toml`, compiled in) with the
+same `[pins]` table for `splice`, `bosun`, `hoist`, `berth`, plus `[sha512.<tool>]` tables
+(`version`, `launcher`, `linux_x64`, `linux_arm64`, …: npm `dist.integrity`, base64).
+`KEEL_PINS=FILE` replaces the embedded file. The repo's `pins.toml` `[pins]` versions override the
+embedded ones (other tables and keys are ignored). A version with no recorded sha512 (repo pins a
+version keel has no sha512s for) is a failed step: update keel or point `KEEL_PINS` at a file
+with that version's sha512s. keel never installs an unverified tool.
 
 Install of a tool not at its pin: in a temp dir `npm pack @keelstackhq/<tool>@<v>` and
 `npm pack @keelstackhq/<tool>-<os>-<arch>@<v>`; the base64 sha512 of each tarball must equal its
@@ -166,7 +162,8 @@ Command: `keel up --token-stdin` (paste, then Enter). keel stores it with
 ## 8. Agent environment
 
 `.keel/cloud-setup.sh` = a proxy-CA prelude + the `data.script` of `bosun setup-snippet`. The
-prelude: when `/root/.ccr/ca-bundle.crt` (or `$SSL_CERT_FILE`) exists, it writes
+prelude runs `bash scripts/proxy-ca.sh install` in each checkout that has it (hull#132's hook);
+otherwise, when `/root/.ccr/ca-bundle.crt` (or `$SSL_CERT_FILE`) exists, it writes
 `/etc/profile.d/keel-proxy-ca.sh` exporting `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`,
 `REQUESTS_CA_BUNDLE`, `CARGO_HTTP_CAINFO`, `GIT_SSL_CAINFO` and sets `npm config set cafile`, so
 tools behind the agent proxy verify TLS. The human step says where to paste it (claude.ai → Code →
@@ -181,9 +178,12 @@ is human-only (Blocked in `docs/PROGRESS.md`).
 
 ## 10. Open questions (for the orchestrator)
 
+Answered: pins (§6, hull#132 `pins.toml`), PAT secret `SPLICE_BOT_TOKEN` in `splice-bot`, proxy-CA
+hook (§8, `scripts/proxy-ca.sh install`), labels: `bosun init` creates labels and owners from the
+gh user; when its JSON has no `data.labels`, keel falls back to `gh label create … --force`. The
+rust template gets `--data no_placeholder=true` (skips `crates/common`). Still assumed, behind
+adapters:
+
 1. `splice pieces --json` shape: assumed `{ok, command, pieces:[{id, description, multiple}]}`.
 2. `bosun doctor --all`: assumed a flag of `doctor`; keel retries without it on exit 2.
 3. `bosun plan import --dry-run` JSON: assumed `data.create` (array) — empty = done.
-4. hull pins file path and format (assumed the setup-script `KEY=VALUE` block).
-5. PAT secret: assumed `SPLICE_BOT_TOKEN` in environment `splice-bot` (splice.yml).
-6. Proxy-CA hook: assumed part of the environment setup script, not a repo `.claude` hook.
