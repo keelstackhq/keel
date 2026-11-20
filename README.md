@@ -58,15 +58,15 @@ Unknown keys are an error.
 
 ## Exit codes
 
-0 done · 1 a step failed or drift remains · 2 a human step is pending · 3 usage, manifest or
-environment error.
+0 done · 1 a step failed or drift remains · 2 usage error (clap errors too) · 3 manifest,
+environment or API error · 5 a human step is pending. `keel --json --help` prints one JSON object.
 
 ## JSON
 
 `--json` prints exactly one object on stdout:
 
 ```json
-{"version":1,"command":"up","ok":false,"exit_code":2,"status":"human",
+{"version":1,"command":"up","ok":false,"exit_code":5,"status":"human",
  "steps":[{"id":"preflight","action":"ok","detail":"node 24.1.0, gh as octo, git 2.47"},
           {"id":"apps","action":"pending","detail":"Renovate app not installed on owner/name"}],
  "human_step":{"id":"apps","title":"Install the Renovate GitHub App on owner/name",

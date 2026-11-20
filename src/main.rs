@@ -2,7 +2,7 @@
 
 use clap::Parser;
 use clap::error::ErrorKind;
-use keel::{Cli, render_json, render_json_error, render_text};
+use keel::{Cli, render_json, render_json_error, render_json_info, render_text};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -13,23 +13,30 @@ fn main() -> ExitCode {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(err) => {
-            let code = match err.kind() {
-                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => 0,
-                _ => 3,
-            };
+            let kind = err.kind();
+            let info = matches!(kind, ErrorKind::DisplayHelp | ErrorKind::DisplayVersion);
+            let code = if info { 0 } else { 2 };
+            let json = args
+                .iter()
+                .take_while(|a| *a != "--")
+                .any(|a| a == "--json");
+            if json && info {
+                let (command, key) = if kind == ErrorKind::DisplayHelp {
+                    ("help", "help")
+                } else {
+                    ("version", "text")
+                };
+                println!("{}", render_json_info(command, key, &err.to_string()));
+                return ExitCode::from(0);
+            }
             let _ = err.print();
-            if code == 3
-                && args
-                    .iter()
-                    .take_while(|a| *a != "--")
-                    .any(|a| a == "--json")
-            {
+            if json && !info {
                 let command = command_name(&args);
                 let message = err.to_string();
                 let fix = format!("run `keel {command} --help`").replace("  ", " ");
                 println!(
                     "{}",
-                    render_json_error(&command, message.trim_end(), fix.trim_end())
+                    render_json_error(&command, 2, message.trim_end(), fix.trim_end())
                 );
             }
             return ExitCode::from(code);
@@ -53,6 +60,7 @@ fn main() -> ExitCode {
                     "{}",
                     render_json_error(
                         command,
+                        err.exit_code(),
                         &err.to_string(),
                         err.fix()
                             .unwrap_or("the message says what to change; see `keel --help`")

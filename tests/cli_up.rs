@@ -155,7 +155,7 @@ fn one_json(stdout: &str) -> serde_json::Value {
 fn first_run_stops_at_apps_with_one_json_object() {
     let env = Env::new();
     let (code, out, _) = run(&env, "fresh", &up("up", &[]), "");
-    assert_eq!(code, 2, "{out}");
+    assert_eq!(code, 5, "{out}");
     let v = one_json(&out);
     assert_eq!(v["status"], "human");
     assert_eq!(v["human_step"]["id"], "apps");
@@ -198,7 +198,7 @@ fn plan_never_writes() {
     let (code, out, _) = run(&env, "plan", &up("plan", &[]), "");
     let v = one_json(&out);
     assert_eq!(v["command"], "plan");
-    assert_eq!(code, 2, "{out}"); // stops at the token gate
+    assert_eq!(code, 5, "{out}"); // stops at the token gate
     assert!(!env.repo.join("keel.toml").exists());
     assert!(!env.repo.join(".keel").exists());
     let calls = env.read("calls.log");
@@ -253,7 +253,7 @@ fn token_goes_to_gh_stdin_only() {
         &up("up", &["--token-stdin"]),
         &format!("{secret}\n"),
     );
-    assert_eq!(code, 2, "{out} {err}"); // then the agent-env gate
+    assert_eq!(code, 5, "{out} {err}"); // then the agent-env gate
     let v = one_json(&out);
     assert_eq!(v["human_step"]["id"], "agent-env");
     assert_eq!(v["steps"][5]["id"], "token");
@@ -279,7 +279,7 @@ fn token_goes_to_gh_stdin_only() {
 }
 
 #[test]
-fn doctor_offline_is_a_human_step_with_exit_1() {
+fn doctor_offline_is_a_human_step_with_exit_5() {
     let env = Env::new();
     env.rendered();
     std::fs::write(
@@ -288,7 +288,7 @@ fn doctor_offline_is_a_human_step_with_exit_1() {
     )
     .unwrap();
     let (code, out, err) = run(&env, "offline", &["--json".into(), "doctor".into()], "");
-    assert_eq!(code, 1, "{out} {err}");
+    assert_eq!(code, 5, "{out} {err}");
     let v = one_json(&out);
     assert_eq!(v["command"], "doctor");
     assert_eq!(v["status"], "human");

@@ -40,12 +40,12 @@ keel [-C DIR] [--json] [-v] doctor
 
 - `-C DIR`: the repo checkout (default `.`).
 - `--repo`, `--template`, `--pieces`, `--plan`: written to `keel.toml` on the first run. Later runs
-  read `keel.toml`; a flag that disagrees with it is a usage error (exit 3, names the key).
+  read `keel.toml`; a flag that disagrees with it is a usage error (exit 2, names the key).
 - `--pieces` takes a comma list; each entry is a splice piece `ID` or `ID:NAME` (the instance name,
   e.g. `rust-cli:my-cli`).
 - `--template`: `rust` = `gh:keelstackhq/hull//template-rust`, `ts` = `gh:keelstackhq/hull//template`;
   anything else is passed to `splice new` as the source.
-- `--wait SECS` (default 300): how long a GitHub-App gate polls before it returns exit 2. `0` = check
+- `--wait SECS` (default 300): how long a GitHub-App gate polls before it returns exit 5. `0` = check
   once. Poll interval: `KEEL_POLL_SECS` (default 10).
 - `--token-stdin`: read the PAT for step 6 from stdin (one line, trailing newline trimmed).
 - `--confirm agent-env`: record that the cloud environment setup script is attached (step 7);
@@ -54,9 +54,11 @@ keel [-C DIR] [--json] [-v] doctor
 
 ### 3.1 Exit codes
 
-0 done · 1 a step failed or (for `plan`/`doctor`) work or drift remains · 2 a human step is
-pending · 3 usage, manifest or environment error (message says how to fix). clap usage errors exit
-3 too (help/version exit 0).
+0 done · 1 a step failed or (for `plan`/`doctor`) work or drift remains · 2 usage error (clap
+errors too) · 3 manifest, environment or API error (message says how to fix) · 5 a human step is
+pending (D-020; 5 matches bosun's needs-human). Help and version exit 0. With `--json`,
+`--help` and `--version` print one object (`{"version":1,"command":"help","ok":true,
+"exit_code":0,"help":"<text>"}`; `command:"version"` carries `text`) and exit 0.
 
 ### 3.2 JSON
 
@@ -72,7 +74,7 @@ pending · 3 usage, manifest or environment error (message says how to fix). cla
 - `steps[].action`: `ok` (already done, skipped) · `done` (keel did it now) · `would-run` (`plan`)
   · `pending` (human gate) · `failed` · `not-reached`.
 - `human_step`: null, or `{id, title, url, command}` (`url`/`command` may be `""`). At most one.
-- On exit 3: same envelope, `status:"error"`, `steps:[]`, `human_step:null`, plus
+- On exit 2 or 3: same envelope, `status:"error"`, `steps:[]`, `human_step:null`, plus
   `error:{message, fix}`.
 - Without `--json`: one line per step, then the human step or `done`. Logs go to stderr.
 
@@ -137,10 +139,9 @@ A non-JSON or missing output is a failed step whose detail names the command (ne
 
 ### 5.3 `keel doctor`
 
-Runs step 1's checks (no installs) and step 8's checks alone. Exit 0 healthy, 1 drift, 3 error.
-A human gate (for example `gh` not logged in, or offline doctor) is not exit 2 here: the exit stays
-1, and the JSON `status` is `human` with `human_step` set (drift without a human step is
-`planned`).
+Runs step 1's checks (no installs) and step 8's checks alone. Exit 0 healthy, 1 drift, 3 error, 5 a human step is pending
+(for example `gh` not logged in, or offline doctor): the JSON `status` is `human` with `human_step`
+set (drift without a human step is `planned`, exit 1).
 
 ## 6. Pins and installs
 
@@ -185,7 +186,9 @@ is not committed (`.keel/` is in `.gitignore`).
 `@keelstackhq/keel` with `optionalDependencies` on `@keelstackhq/keel-{linux-x64,linux-arm64,
 darwin-x64,darwin-arm64,win32-x64}`, same launcher as hoist (`npm/keel/bin/keel.js`). Publishing
 is human-only (Blocked in `docs/PROGRESS.md`). Launcher environment errors (unsupported platform, platform package missing, binary cannot
-start) exit 3, like keel's own environment errors.
+start) exit 3, like keel's own environment errors. With `--json` in the arguments (before `--`) the
+launcher prints exactly one JSON object on stdout for its own errors: `{version:1, command, ok:false,
+exit_code:3, status:"error", steps:[], human_step:null, error:{message, fix}}`.
 
 ## 10. Open questions (for the orchestrator)
 

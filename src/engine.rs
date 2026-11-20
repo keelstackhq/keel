@@ -71,7 +71,7 @@ pub fn run_steps(cx: &mut Ctx, steps: &[Box<dyn Step>], mode: Mode) -> Result<Re
     let (status, exit_code) = if failed {
         (Status::Failed, 1)
     } else if human.is_some() {
-        (Status::Human, 2)
+        (Status::Human, 5)
     } else if would_run {
         (Status::Planned, 1)
     } else {
@@ -185,7 +185,7 @@ mod tests {
             [Action::Done, Action::Pending, Action::NotReached]
         );
         assert_eq!(r.steps[0].detail, "did");
-        assert_eq!((r.status, r.exit_code, n.get()), (Status::Human, 2, 1));
+        assert_eq!((r.status, r.exit_code, n.get()), (Status::Human, 5, 1));
         assert_eq!(r.human_step.unwrap().command, "keel up");
     }
 
@@ -200,7 +200,7 @@ mod tests {
             Mode::Up,
         );
         assert_eq!(actions(&r), [Action::Pending, Action::NotReached]);
-        assert_eq!(r.exit_code, 2);
+        assert_eq!(r.exit_code, 5);
         let r = run(
             vec![
                 step(
@@ -269,7 +269,7 @@ mod tests {
                 Action::NotReached
             ]
         );
-        assert_eq!((r.exit_code, n.get()), (2, 0));
+        assert_eq!((r.exit_code, n.get()), (5, 0));
         assert_eq!(r.command, "plan");
     }
 

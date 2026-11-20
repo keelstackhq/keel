@@ -24,6 +24,30 @@ impl KeelError {
     }
 
     pub fn exit_code(&self) -> i32 {
-        3
+        match self {
+            KeelError::Usage(_) => 2,
+            _ => 3,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exit_codes() {
+        assert_eq!(KeelError::Usage("x".into()).exit_code(), 2);
+        assert_eq!(KeelError::Env("x".into()).exit_code(), 3);
+        let m = KeelError::Manifest {
+            file: "f".into(),
+            message: "m".into(),
+        };
+        assert_eq!(m.exit_code(), 3);
+        let f = KeelError::Fix {
+            message: "m".into(),
+            fix: "f".into(),
+        };
+        assert_eq!(f.exit_code(), 3);
     }
 }

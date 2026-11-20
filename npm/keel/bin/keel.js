@@ -31,26 +31,64 @@ function binaryPath(platform, arch, resolve = require.resolve) {
   return path.join(dir, "bin", platform === "win32" ? "keel.exe" : "keel");
 }
 
+/** True when `--json` appears before a `--` terminator. */
+function wantsJson(args) {
+  const end = args.indexOf("--");
+  return (end < 0 ? args : args.slice(0, end)).includes("--json");
+}
+
+/** The subcommand word, skipping flags and the value of `-C` ("" when there is none). */
+function commandName(args) {
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "-C") i++;
+    else if (args[i] === "--") break;
+    else if (!args[i].startsWith("-")) return ["up", "plan", "doctor"].includes(args[i]) ? args[i] : "";
+  }
+  return "";
+}
+
+/** Report a launcher error: stderr text, plus keel's one-object JSON envelope with --json. */
+function fail(args, message, fix) {
+  process.stderr.write(`keel: ${message}\n`);
+  if (wantsJson(args)) {
+    process.stdout.write(
+      JSON.stringify({
+        version: 1,
+        command: commandName(args),
+        ok: false,
+        exit_code: ENV_ERROR,
+        status: "error",
+        steps: [],
+        human_step: null,
+        error: { message, fix },
+      }) + "\n",
+    );
+  }
+  return ENV_ERROR;
+}
+
 /** Run keel with `args`; returns the exit code. */
 function run(args, resolve = require.resolve) {
   const { platform, arch } = process;
   const key = `${platform}-${arch}`;
   const pkg = packageFor(platform, arch);
   if (!pkg) {
-    process.stderr.write(
-      `keel: no binary for ${key}; supported platforms: ${Object.keys(PLATFORMS).join(", ")}\n`,
+    return fail(
+      args,
+      `no binary for ${key}; supported platforms: ${Object.keys(PLATFORMS).join(", ")}`,
+      "run keel on a supported platform",
     );
-    return ENV_ERROR;
   }
   let bin;
   try {
     bin = binaryPath(platform, arch, resolve);
   } catch {
-    process.stderr.write(
-      `keel: platform package ${pkg} is not installed; reinstall @keelstackhq/keel ` +
-        `without --no-optional (or --omit=optional)\n`,
+    return fail(
+      args,
+      `platform package ${pkg} is not installed; reinstall @keelstackhq/keel ` +
+        "without --no-optional (or --omit=optional)",
+      "npm install @keelstackhq/keel",
     );
-    return ENV_ERROR;
   }
   let result = spawnSync(bin, args, { stdio: "inherit" });
   if (result.error && result.error.code === "EACCES") {
@@ -63,8 +101,11 @@ function run(args, resolve = require.resolve) {
     }
   }
   if (result.error) {
-    process.stderr.write(`keel: cannot run ${bin}: ${result.error.message}\n`);
-    return ENV_ERROR;
+    return fail(
+      args,
+      `cannot run ${bin}: ${result.error.message}`,
+      "reinstall @keelstackhq/keel",
+    );
   }
   if (result.signal) {
     process.kill(process.pid, result.signal);
@@ -73,7 +114,7 @@ function run(args, resolve = require.resolve) {
   return result.status ?? 1;
 }
 
-module.exports = { PLATFORMS, packageFor, binaryPath, run };
+module.exports = { PLATFORMS, packageFor, binaryPath, run, wantsJson, commandName };
 
 if (require.main === module) {
   process.exitCode = run(process.argv.slice(2));

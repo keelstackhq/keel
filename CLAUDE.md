@@ -13,10 +13,10 @@ and stops at the first step only a human can do. One Rust binary. Part of the ke
 ## Layout
 
 ```
-src/main.rs      parse (clap errors -> exit 3), run, print lines or JSON, exit code
+src/main.rs      parse (clap errors -> exit 2), run, print lines or JSON, exit code
 src/cli.rs       Cli, Command (up|plan|doctor); global -C, --json, -v
 src/lib.rs       run(Cli) -> Result<Report, KeelError>
-src/error.rs     KeelError (always exit 3, message says how to fix)
+src/error.rs     KeelError (Usage exit 2, others exit 3, message says how to fix)
 src/report.rs    Action, StepResult, HumanStep, Report; render_json, render_text
 src/exec.rs      Runner trait: real subprocess runner and FakeRunner for tests
 src/manifest.rs  keel.toml read/write, unknown keys are an error
@@ -44,8 +44,8 @@ Run the fast checks (fmt, clippy, test) before every commit.
 
 ## Rules that must never break
 
-- **Exit codes:** 0 done · 1 step failed or drift · 2 human step pending · 3 usage, manifest or
-  environment error (message says how to fix it). clap usage errors exit 3 too.
+- **Exit codes (D-020):** 0 done · 1 step failed or drift · 2 usage (clap errors too) · 3 manifest,
+  environment or API error (message says how to fix it) · 5 human step pending.
 - **`--json` stdout is exactly one object** (spec §3.2). Logs go to stderr.
 - **Subprocesses only:** keel calls tools and never reimplements them.
 - **Never leak the PAT:** it never reaches argv, files, logs, stdout, stderr or JSON; it goes to
@@ -70,7 +70,7 @@ Run the fast checks (fmt, clippy, test) before every commit.
 ## Gotchas
 
 - `TMPDIR` is `/` in some containers; set it for `cargo` and for child processes in tests.
-- clap exits 2 on usage errors by default; `main` maps every non-help/version error to 3.
+- clap exits 2 on usage errors by default; `main` keeps that (help/version exit 0).
 - keel itself needs Node 24+ only for the tools it installs; the launcher runs on Node 18+.
 - Tool features may be missing in old versions (splice/bosun exit 2): adapters degrade to a human
   step or warning, never a crash.

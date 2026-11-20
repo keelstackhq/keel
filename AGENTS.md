@@ -4,7 +4,7 @@ keel bootstraps a repo across the keelstackhq tools from one manifest (`keel up|
 Read `CLAUDE.md` for layout, commands and how to work; the spec is
 `docs/superpowers/specs/2026-11-20-keel-design.md`. Short version of the rules:
 
-- Exit codes: 0 done, 1 step failed or drift, 2 human step pending, 3 usage/manifest/env error.
+- Exit codes: 0 done, 1 step failed or drift, 2 usage error, 3 manifest/env/API error, 5 human step pending.
 - `--json` prints exactly one object on stdout (spec §3.2); logs go to stderr.
 - keel calls tools as subprocesses and never reimplements them.
 - The PAT never reaches argv, files, logs or output. No HTTP/TLS crate; `#![forbid(unsafe_code)]`.

@@ -45,7 +45,7 @@ pub struct UpArgs {
     /// A bosun plan file to import.
     #[arg(long)]
     pub plan: Option<String>,
-    /// Seconds a GitHub App gate polls before it returns exit 2.
+    /// Seconds a GitHub App gate polls before it returns exit 5.
     #[arg(long, default_value_t = 300)]
     pub wait: u64,
     /// Read the PAT for the token step from stdin.

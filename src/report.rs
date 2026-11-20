@@ -106,19 +106,28 @@ struct JsonError<'a> {
     error: JsonErrorBody<'a>,
 }
 
-/// The `--json` object for an exit-3 error: the same envelope, `status:"error"`.
-pub fn render_json_error(command: &str, message: &str, fix: &str) -> String {
+/// The `--json` object for an exit-2 or exit-3 error: the same envelope, `status:"error"`.
+pub fn render_json_error(command: &str, exit_code: i32, message: &str, fix: &str) -> String {
     let view = JsonError {
         version: 1,
         command,
         ok: false,
-        exit_code: 3,
+        exit_code,
         status: "error",
         steps: [],
         human_step: None,
         error: JsonErrorBody { message, fix },
     };
     serde_json::to_string(&view).expect("error serializes")
+}
+
+/// The `--json` object for `--help` (`command:"help"`) and `--version` (`command:"version"`).
+pub fn render_json_info(command: &str, key: &str, text: &str) -> String {
+    let mut v = serde_json::json!({
+        "version": 1, "command": command, "ok": true, "exit_code": 0,
+    });
+    v[key] = text.trim_end().into();
+    v.to_string()
 }
 
 /// One line per step, then the human step or `done`. Ends with a newline.
@@ -177,7 +186,7 @@ mod tests {
                 url: "https://github.com/apps/renovate/installations/new".into(),
                 command: "keel up".into(),
             }),
-            exit_code: 2,
+            exit_code: 5,
         }
     }
 
@@ -186,7 +195,7 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&render_json(&sample())).unwrap();
         assert_eq!(v["version"], 1);
         assert_eq!(v["ok"], false);
-        assert_eq!(v["exit_code"], 2);
+        assert_eq!(v["exit_code"], 5);
         assert_eq!(v["status"], "human");
         assert_eq!(v["steps"][1]["action"], "pending");
         assert_eq!(v["steps"][2]["action"], "not-reached");
@@ -208,9 +217,9 @@ mod tests {
     #[test]
     fn json_error_envelope() {
         let v: serde_json::Value =
-            serde_json::from_str(&render_json_error("up", "bad", "fix it")).unwrap();
+            serde_json::from_str(&render_json_error("up", 2, "bad", "fix it")).unwrap();
         assert_eq!(v["status"], "error");
-        assert_eq!(v["exit_code"], 3);
+        assert_eq!(v["exit_code"], 2);
         assert_eq!(v["ok"], false);
         assert_eq!(v["steps"].as_array().unwrap().len(), 0);
         assert!(v["human_step"].is_null());

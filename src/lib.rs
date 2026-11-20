@@ -14,14 +14,14 @@ pub mod tools;
 
 pub use cli::{Cli, Command};
 pub use error::KeelError;
-pub use report::{render_json, render_json_error, render_text};
+pub use report::{render_json, render_json_error, render_json_info, render_text};
 
 use cli::UpArgs;
 use ctx::{Ctx, Opts};
 use engine::Mode;
 use exec::{Cmd, Out, Runner, SystemRunner};
 use manifest::Manifest;
-use report::{Report, Status};
+use report::Report;
 use std::io::{BufRead, IsTerminal};
 use std::time::Duration;
 use zeroize::Zeroizing;
@@ -105,14 +105,6 @@ pub fn run_with(
     let mut report = engine::run_steps(&mut cx, &steps, command)?;
     if doctor {
         report.command = "doctor".into();
-        if report.exit_code == 2 {
-            // doctor reports drift (1), not a pending human step: the exit stays 1, and the
-            // status stays `human` when the report carries a human step (§5.3).
-            report.exit_code = 1;
-            if report.human_step.is_none() {
-                report.status = Status::Planned;
-            }
-        }
     }
     Ok(report)
 }

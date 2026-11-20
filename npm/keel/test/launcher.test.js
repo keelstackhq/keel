@@ -124,3 +124,34 @@ test("a binary without the executable bit is made executable once and run", (t) 
   assert.equal(r.stdout, "ran:check\n");
   assert.equal(fs.statSync(bin).mode & 0o777, 0o755);
 });
+
+test("with --json an unknown platform prints one JSON error object on stdout", () => {
+  const r = runAs("aix", "ppc64", ["--json", "up"]);
+  assert.equal(r.status, 3);
+  const v = JSON.parse(r.stdout);
+  assert.equal(r.stdout, JSON.stringify(v) + "\n");
+  assert.deepEqual(Object.keys(v), [
+    "version", "command", "ok", "exit_code", "status", "steps", "human_step", "error",
+  ]);
+  assert.equal(v.command, "up");
+  assert.equal(v.ok, false);
+  assert.equal(v.exit_code, 3);
+  assert.equal(v.status, "error");
+  assert.deepEqual(v.steps, []);
+  assert.equal(v.human_step, null);
+  assert.match(v.error.message, /aix-ppc64/);
+  assert.equal(typeof v.error.fix, "string");
+});
+
+test("with --json a missing platform package prints one JSON error object", () => {
+  const r = runAs("linux", "arm64", ["-C", "x", "--json", "doctor"]);
+  assert.equal(r.status, 3);
+  const v = JSON.parse(r.stdout);
+  assert.equal(v.command, "doctor");
+  assert.match(v.error.message, /@keelstackhq\/keel-linux-arm64/);
+});
+
+test("without --json, or after --, stdout stays empty", () => {
+  assert.equal(runAs("aix", "ppc64", ["up"]).stdout, "");
+  assert.equal(runAs("aix", "ppc64", ["up", "--", "--json"]).stdout, "");
+});
