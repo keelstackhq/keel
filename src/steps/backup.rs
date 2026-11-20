@@ -63,7 +63,7 @@ impl Step for Backup {
         let (Some(b), Some(f)) = (cx.manifest.backup.clone(), cx.manifest.fly().cloned()) else {
             return Ok(Check::Done("no [backup]".into()));
         };
-        if cx.manifest.confirmed.backup {
+        if cx.manifest.confirmed.backup.as_deref() == Some(f.app.as_str()) {
             return Ok(Check::Done(
                 "backup bucket confirmed as created by hand".into(),
             ));
@@ -212,9 +212,13 @@ mod tests {
     fn confirmed_backup_is_done() {
         let d = tempfile::tempdir().unwrap();
         let mut m = with_backup(Provider::R2);
-        m.confirmed.backup = true;
-        let c = run(&FakeRunner::new(), d.path(), m, false, false);
+        m.confirmed.backup = Some("app".into());
+        let c = run(&FakeRunner::new(), d.path(), m.clone(), false, false);
         assert!(matches!(c, Check::Done(m) if m.contains("confirmed")));
+        // Confirmed for another app: void.
+        m.confirmed.backup = Some("old-app".into());
+        let c = run(&FakeRunner::new(), d.path(), m, false, false);
+        assert!(matches!(c, Check::Human(_)), "{c:?}");
     }
 
     #[test]

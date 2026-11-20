@@ -72,7 +72,7 @@ impl Step for Dns {
         let Some(f) = cx.manifest.fly().cloned() else {
             return Ok(Check::Done("no [deploy.fly]".into()));
         };
-        if cx.manifest.confirmed.dns {
+        if cx.manifest.confirmed.dns.as_deref() == Some(f.host.as_str()) {
             return Ok(Check::Done(format!(
                 "DNS records for {} confirmed as added by hand",
                 f.host
@@ -300,11 +300,18 @@ mod tests {
     fn confirmed_dns_is_done_without_a_token_or_fly_ips() {
         let d = tempfile::tempdir().unwrap();
         let mut m = cf_manifest();
-        m.confirmed.dns = true;
+        m.confirmed.dns = Some("app.example.com".into());
         let r = FakeRunner::new();
-        let c = run(&r, d.path(), m, false, false);
+        let c = run(&r, d.path(), m.clone(), false, false);
         assert!(matches!(c, Check::Done(m) if m.contains("confirmed")));
         assert!(r.calls().is_empty());
+        // Confirmed for another host: void, the step asks for the token again.
+        m.confirmed.dns = Some("old.example.com".into());
+        let c = run(&FakeRunner::new(), d.path(), m, false, false);
+        assert!(
+            !matches!(&c, Check::Done(m) if m.contains("confirmed")),
+            "{c:?}"
+        );
     }
 
     #[test]

@@ -99,12 +99,36 @@ fn default_retention() -> u32 {
 pub struct Confirmed {
     #[serde(default)]
     pub agent_env: bool,
-    /// The DNS records were added by hand (`--confirm dns`).
-    #[serde(default)]
-    pub dns: bool,
-    /// The backup bucket was created by hand (`--confirm backup`).
-    #[serde(default)]
-    pub backup: bool,
+    /// The host whose DNS records were added by hand (`--confirm dns`). Counts only while it
+    /// equals `[deploy.fly] host`. An old `dns = true` reads as unset.
+    #[serde(
+        default,
+        deserialize_with = "confirmed_value",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub dns: Option<String>,
+    /// The fly app whose backup bucket was created by hand (`--confirm backup`). Counts only
+    /// while it equals `[deploy.fly] app`. An old `backup = true` reads as unset.
+    #[serde(
+        default,
+        deserialize_with = "confirmed_value",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub backup: Option<String>,
+}
+
+/// A string is the confirmed value; a boolean (the old format) is void.
+fn confirmed_value<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum V {
+        Str(String),
+        Bool(#[allow(dead_code)] bool),
+    }
+    Ok(match V::deserialize(d)? {
+        V::Str(s) => Some(s),
+        V::Bool(_) => None,
+    })
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -294,12 +318,23 @@ impl Manifest {
                     self.confirmed.agent_env = true;
                 }
                 "dns" => {
-                    changed |= !self.confirmed.dns;
-                    self.confirmed.dns = true;
+                    let Some(f) = self.fly() else {
+                        return Err(needs_table("dns", "[deploy.fly]"));
+                    };
+                    let host = f.host.clone();
+                    changed |= self.confirmed.dns.as_deref() != Some(&host);
+                    self.confirmed.dns = Some(host);
                 }
                 "backup" => {
-                    changed |= !self.confirmed.backup;
-                    self.confirmed.backup = true;
+                    if self.backup.is_none() {
+                        return Err(needs_table("backup", "[backup]"));
+                    }
+                    let app = self.fly().map(|f| f.app.clone());
+                    let Some(app) = app else {
+                        return Err(needs_table("backup", "[deploy.fly]"));
+                    };
+                    changed |= self.confirmed.backup.as_deref() != Some(&app);
+                    self.confirmed.backup = Some(app);
                 }
                 other => {
                     return Err(KeelError::Usage(format!(
@@ -366,6 +401,12 @@ pub fn validate_repo(repo: &str) -> Result<(), KeelError> {
             "--repo {repo:?}: expected OWNER/NAME (letters, digits, `-`; the name may also have `.` and `_`), e.g. keelstackhq/my-app"
         )))
     }
+}
+
+fn needs_table(step: &str, table: &str) -> KeelError {
+    KeelError::Usage(format!(
+        "--confirm {step} needs {table} in {FILE}: it records the host or app it was done for"
+    ))
 }
 
 fn conflict(key: &str, have: &str, flag: &str) -> KeelError {
@@ -618,6 +659,20 @@ mod tests {
             .unwrap()
         );
         assert!(m.confirmed.agent_env);
+        // dns and backup need the table they confirm.
+        for what in ["dns", "backup"] {
+            let e = m
+                .merge_flags(&UpArgs {
+                    confirm: vec![what.into()],
+                    ..args()
+                })
+                .unwrap_err();
+            assert!(
+                e.to_string().contains(&format!("--confirm {what} needs")),
+                "{what}: {e}"
+            );
+        }
+        let mut m = Manifest::parse(&format!("{FLY}[backup]\nprovider = \"r2\"\n")).unwrap();
         assert!(
             m.merge_flags(&UpArgs {
                 confirm: vec!["dns".into(), "backup".into()],
@@ -625,7 +680,32 @@ mod tests {
             })
             .unwrap()
         );
-        assert!(m.confirmed.dns && m.confirmed.backup);
+        assert_eq!(m.confirmed.dns.as_deref(), Some("app.example.com"));
+        assert_eq!(m.confirmed.backup.as_deref(), Some("a"));
+        // Same again: nothing changes; the value round-trips as a string.
+        assert!(
+            !m.merge_flags(&UpArgs {
+                confirm: vec!["dns".into()],
+                ..args()
+            })
+            .unwrap()
+        );
+        let t = toml::to_string(&m).unwrap();
+        assert!(
+            t.contains("dns = \"app.example.com\"") && t.contains("backup = \"a\""),
+            "{t}"
+        );
+        assert_eq!(Manifest::parse(&t).unwrap(), m);
+        // A new host is a new confirmation.
+        m.deploy.as_mut().unwrap().fly.as_mut().unwrap().host = "b.example.com".into();
+        assert!(
+            m.merge_flags(&UpArgs {
+                confirm: vec!["dns".into()],
+                ..args()
+            })
+            .unwrap()
+        );
+        assert_eq!(m.confirmed.dns.as_deref(), Some("b.example.com"));
         assert!(
             m.merge_flags(&UpArgs {
                 confirm: vec!["merge".into()],
@@ -633,6 +713,14 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    #[test]
+    fn an_old_boolean_confirmation_is_void() {
+        let m =
+            Manifest::parse("[confirmed]\nagent_env = true\ndns = true\nbackup = false\n").unwrap();
+        assert!(m.confirmed.agent_env);
+        assert_eq!((m.confirmed.dns, m.confirmed.backup), (None, None));
     }
 
     #[test]
