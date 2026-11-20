@@ -30,7 +30,7 @@ case "$name $*" in
     [ "$KEEL_SCENARIO" = done ] || [ -f "$KEEL_LOG/secret_set" ] || exit 1;;
   "gh repo view"*) echo '{"defaultBranchRef":{"name":"main"}}';;
   "gh pr view"*)
-    st=OPEN; [ "$KEEL_SCENARIO" = done ] && st=MERGED
+    st=OPEN; { [ "$KEEL_SCENARIO" = done ] || [ -f "$KEEL_LOG/merged" ]; } && st=MERGED
     echo '{"number":7,"url":"https://github.com/owner/name/pull/7","state":"'$st'","headRefOid":"abc123"}';;
   "git ls-remote"*) printf '3f4a65fda568cdd20c76168ed156d25a28ba5630\trefs/tags/v0.13.0\n';;
   "splice --version") echo "splice 0.6.0";;
@@ -436,6 +436,82 @@ fn merged_deploy_is_verified_over_http() {
     .unwrap();
     let (_, out, _) = run(&env2, "done", &["--json".into(), "up".into()], "");
     assert!(one_json(&out).get("verify").is_none());
+}
+
+/// The PAT and the Cloudflare token reach no argv log, stdout, stderr, hoist.toml, keel.toml or
+/// `.keel/`, through deploy, dns, backup, merge and verify (the PR is already merged).
+#[test]
+fn pat_and_cloudflare_token_never_leak_through_deploy_dns_backup_merge_verify() {
+    let env = Env::new();
+    fly_repo(&env);
+    std::fs::write(env.log.join("merged"), "").unwrap();
+    let manifest = format!(
+        "{FLY_MANIFEST}dns = \"cloudflare\"\n[backup]\nprovider = \"r2\"\naccount_id = \"0123456789abcdef0123456789abcdef\"\n"
+    );
+    std::fs::write(env.repo.join("keel.toml"), manifest).unwrap();
+    let (pat, cf) = ("ghp_CanaryPatValue456", "cf-canary-token-789");
+    let o = env
+        .keel("token", &["--json", "up", "--token-stdin"])
+        .env("CLOUDFLARE_API_TOKEN", cf)
+        .write_stdin(format!("{pat}\n"))
+        .output()
+        .unwrap();
+    let (out, err) = (
+        String::from_utf8(o.stdout).unwrap(),
+        String::from_utf8(o.stderr).unwrap(),
+    );
+    assert_eq!(o.status.code(), Some(0), "{out} {err}");
+    let v = one_json(&out);
+    let ids: Vec<(String, String)> = v["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| {
+            (
+                s["id"].as_str().unwrap().into(),
+                s["action"].as_str().unwrap().into(),
+            )
+        })
+        .collect();
+    for id in ["token", "deploy", "dns", "backup", "merge", "verify"] {
+        assert!(
+            ids.iter().any(|(i, a)| i == id && a != "not-reached"),
+            "{id}: {ids:?}"
+        );
+    }
+    assert!(
+        env.read("stdin.log").contains(pat),
+        "the PAT goes to gh stdin"
+    );
+    let calls = env.read("calls.log");
+    for want in ["fly-setup.sh", "--area cloudflare", "gh pr view", "curl "] {
+        assert!(calls.contains(want), "{want}: {calls}");
+    }
+    let mut texts = vec![
+        ("stdout".to_string(), out),
+        ("stderr".to_string(), err),
+        ("calls.log".to_string(), calls),
+        ("stdin.log (cf)".to_string(), env.read("stdin.log")),
+    ];
+    for f in ["keel.toml", "hoist.toml"] {
+        texts.push((f.into(), std::fs::read_to_string(env.repo.join(f)).unwrap()));
+    }
+    for e in std::fs::read_dir(env.repo.join(".keel"))
+        .into_iter()
+        .flatten()
+    {
+        let p = e.unwrap().path();
+        texts.push((
+            format!("{}", p.display()),
+            std::fs::read_to_string(&p).unwrap_or_default(),
+        ));
+    }
+    for (what, text) in &texts {
+        assert!(!text.contains(cf), "Cloudflare token leaked into {what}");
+        if what != "stdin.log (cf)" {
+            assert!(!text.contains(pat), "PAT leaked into {what}");
+        }
+    }
 }
 
 #[test]
