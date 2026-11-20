@@ -6,6 +6,7 @@ use crate::step::{Check, Step};
 
 pub mod agent_env;
 pub mod apps;
+pub mod backup;
 pub mod deploy;
 pub mod dns;
 pub mod doctor;
@@ -28,6 +29,7 @@ pub fn all_steps() -> Vec<Box<dyn Step>> {
         Box::new(agent_env::AgentEnv),
         Box::new(deploy::Deploy),
         Box::new(dns::Dns),
+        Box::new(backup::Backup),
         Box::new(doctor::Doctor),
         Box::new(merge::Merge),
     ]

@@ -161,7 +161,7 @@ fn first_run_stops_at_apps_with_one_json_object() {
     assert_eq!(v["status"], "human");
     assert_eq!(v["human_step"]["id"], "apps");
     let steps = v["steps"].as_array().unwrap();
-    assert_eq!(steps.len(), 11);
+    assert_eq!(steps.len(), 12);
     assert_eq!(steps[0]["action"], "ok");
     assert_eq!(steps[1]["action"], "pending");
     assert_eq!(steps[2]["action"], "not-reached");
