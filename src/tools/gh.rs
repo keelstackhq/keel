@@ -120,8 +120,8 @@ pub struct Pr {
     pub head: String,
 }
 
-/// The PR of `branch`, if any: `gh pr view <branch> --json number,url,state,headRefOid`.
-pub fn pr_view(r: &dyn Runner, dir: &std::path::Path, branch: &str) -> Option<Pr> {
+/// The PR of `branch`, if any: `gh pr view <branch> --repo R --json number,url,state,headRefOid`.
+pub fn pr_view(r: &dyn Runner, dir: &std::path::Path, repo: &str, branch: &str) -> Option<Pr> {
     let o = r.run(
         &Cmd::new(
             "gh",
@@ -129,6 +129,8 @@ pub fn pr_view(r: &dyn Runner, dir: &std::path::Path, branch: &str) -> Option<Pr
                 "pr",
                 "view",
                 branch,
+                "--repo",
+                repo,
                 "--json",
                 "number,url,state,headRefOid",
             ],

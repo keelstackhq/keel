@@ -4,7 +4,7 @@ use crate::error::KeelError;
 use crate::report::HumanStep;
 use crate::step::{Check, Step};
 use crate::tools::bosun::{self, Res};
-use crate::tools::{gh, git};
+use crate::tools::{gh, git, splice};
 
 pub struct Governance;
 
@@ -57,21 +57,23 @@ impl Step for Governance {
         let repo = repo(cx)?;
         let r = cx.runner;
         let bosun_pin = pin(cx);
+        let default = match gh::default_branch(r, &repo) {
+            Ok(b) => b,
+            Err(e) => return Ok(Check::Failed(e)),
+        };
+        // bosun init and plan import write to the checkout: be on the work branch first (§5.1).
+        let branch = match git::ensure_branch(r, &cx.dir, &default, cx.manifest.branch_name()) {
+            Ok(b) => b,
+            Err(e) => return Ok(Check::Failed(e)),
+        };
         if !cx.dir.join(".bosun/version").is_file() {
             let Some(owner) = gh::login(r) else {
                 return Ok(Check::Failed(
                     "`gh api user` failed; run `gh auth login`".into(),
                 ));
             };
-            let default = match gh::default_branch(r, &repo) {
-                Ok(b) => b,
-                Err(e) => return Ok(Check::Failed(e)),
-            };
-            let branch = match git::ensure_branch(r, &cx.dir, &default, cx.manifest.branch_name()) {
-                Ok(b) => b,
-                Err(e) => return Ok(Check::Failed(e)),
-            };
-            let rust = cx.manifest.template.as_deref() == Some("rust");
+            let rust =
+                cx.manifest.template.as_deref().map(splice::source) == Some(splice::RUST_SOURCE);
             let c = bosun::init_cmd(&cx.dir, &owner, &branch, rust);
             match bosun::run(r, &c, &bosun_pin) {
                 Res::Ok(data) => {
@@ -162,6 +164,34 @@ mod tests {
             lines(&r)
                 .contains(&"bosun --json init --owner octo --branch keel/bootstrap --no-pr".into())
         );
+    }
+
+    #[test]
+    fn full_rust_source_gets_stack_rust() {
+        let d = tempfile::tempdir().unwrap();
+        let r = fake();
+        let _ = apply(&r, d.path(), "gh:keelstackhq/hull//template-rust", None);
+        assert!(
+            lines(&r)
+                .iter()
+                .any(|l| l.starts_with("bosun --json init") && l.ends_with("--stack rust"))
+        );
+    }
+
+    #[test]
+    fn apply_switches_off_the_default_branch_before_bosun() {
+        let d = tempfile::tempdir().unwrap();
+        let r = fake()
+            .on(
+                &["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                Out::ok("main\n"),
+            )
+            .on(&["git", "rev-parse", "--verify"], Out::with(1, "", ""))
+            .on(&["git", "checkout"], Out::ok(""));
+        let _ = apply(&r, d.path(), "rust", None);
+        let l = lines(&r);
+        let p = |s: &str| l.iter().position(|x| x.starts_with(s)).unwrap();
+        assert!(p("git checkout -b keel/bootstrap") < p("bosun --json init"));
     }
 
     #[test]

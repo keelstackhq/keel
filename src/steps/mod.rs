@@ -34,12 +34,51 @@ pub(crate) fn repo(cx: &Ctx) -> Result<String, KeelError> {
     })
 }
 
-/// The branch steps 3-9 work on: the checkout's current branch, else the manifest's.
-pub(crate) fn work_branch(cx: &Ctx) -> String {
-    crate::tools::git::current_branch(cx.runner, &cx.dir)
-        .ok()
-        .filter(|b| !b.is_empty() && b != "HEAD")
-        .unwrap_or_else(|| cx.manifest.branch_name().to_string())
+/// The branch steps 3-9 work on (§5.1), without switching: the current branch unless it is the
+/// default branch or HEAD is detached; then the manifest's `branch`.
+pub(crate) fn work_branch(cx: &Ctx) -> Result<String, String> {
+    let repo = repo(cx).map_err(|e| e.to_string())?;
+    let default = crate::tools::gh::default_branch(cx.runner, &repo)?;
+    let cur = crate::tools::git::current_branch(cx.runner, &cx.dir)?;
+    Ok(crate::tools::git::resolve_branch(
+        &cur,
+        &default,
+        cx.manifest.branch_name(),
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::testutil::*;
+    use super::*;
+    use crate::ctx::Opts;
+    use crate::exec::{FakeRunner, Out};
+
+    #[test]
+    fn work_branch_follows_5_1() {
+        for (head, want) in [
+            ("main\n", "keel/bootstrap"),
+            ("HEAD\n", "keel/bootstrap"),
+            ("claude/work\n", "claude/work"),
+        ] {
+            let r = FakeRunner::new()
+                .on(
+                    &["gh", "repo", "view"],
+                    Out::ok(r#"{"defaultBranchRef":{"name":"main"}}"#),
+                )
+                .on(&["git", "rev-parse", "--abbrev-ref", "HEAD"], Out::ok(head));
+            let cx = ctx(
+                &r,
+                ".".into(),
+                manifest("rust"),
+                PINS,
+                Opts::default(),
+                &no_sleep,
+                &no_stdin,
+            );
+            assert_eq!(work_branch(&cx).unwrap(), want, "{head}");
+        }
+    }
 }
 
 #[cfg(test)]

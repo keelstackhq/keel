@@ -36,9 +36,9 @@ impl Step for Render {
         let tpl = template(cx)?;
         let src = splice::source(&tpl).to_string();
         let r = cx.runner;
-        let lock = cx.dir.join(".splice/lock.toml").is_file();
+        let lock_before = cx.dir.join(".splice/lock.toml").is_file();
 
-        if !lock {
+        if !lock_before {
             // Validate piece names before touching the checkout.
             match splice::pieces(r, &cx.dir, &src) {
                 splice::Pieces::Ids(ids) => {
@@ -59,18 +59,24 @@ impl Step for Render {
                 }
                 splice::Pieces::Unavailable(w) => eprintln!("keel: warning: {w}"),
             }
-            let default = match gh::default_branch(r, &repo) {
-                Ok(b) => b,
-                Err(e) => return Ok(Check::Failed(e)),
-            };
-            if let Err(e) = git::ensure_branch(r, &cx.dir, &default, cx.manifest.branch_name()) {
-                return Ok(Check::Failed(e));
-            }
+        }
+        // Every path below commits: be on the work branch first (§5.1).
+        let default = match gh::default_branch(r, &repo) {
+            Ok(b) => b,
+            Err(e) => return Ok(Check::Failed(e)),
+        };
+        if let Err(e) = git::ensure_branch(r, &cx.dir, &default, cx.manifest.branch_name()) {
+            return Ok(Check::Failed(e));
+        }
+        // The branch may already hold the render (a re-run from a fresh clone).
+        let rendered = cx.dir.join(".splice/lock.toml").is_file();
+        if !rendered {
             // `splice new` refuses a dirty tree: commit keel.toml (only it) on the branch first.
             if let Err(e) = git::commit_path(r, &cx.dir, "keel.toml", "keel: add keel.toml") {
                 return Ok(Check::Failed(e));
             }
-            let c = splice::new_cmd(&cx.dir, &src, &cx.manifest.pieces, tpl == "rust");
+            let rust = src == splice::RUST_SOURCE;
+            let c = splice::new_cmd(&cx.dir, &src, &cx.manifest.pieces, rust);
             let o = r.run(&c);
             if o.code != 0 {
                 return Ok(Check::Failed(tools::failure(&c, &o)));
@@ -79,14 +85,33 @@ impl Step for Render {
                 return Ok(Check::Failed(tools::not_json(&c)));
             }
         }
-        if cx.dir.join("Cargo.toml").is_file() && !cx.dir.join("Cargo.lock").is_file() {
+        let lockfile = cx.dir.join("Cargo.toml").is_file() && !cx.dir.join("Cargo.lock").is_file();
+        if lockfile {
             let c = Cmd::new("cargo", &["generate-lockfile"]).dir(&cx.dir);
             let o = r.run(&c);
             if o.code != 0 {
                 return Ok(Check::Failed(tools::failure(&c, &o)));
             }
         }
-        if let Err(e) = git::commit_all(r, &cx.dir, &format!("keel: render {tpl}")) {
+        // keel's scratch dir must never reach the target repo's history.
+        let ignored = match git::ensure_ignored(&cx.dir, ".keel/") {
+            Ok(c) => c,
+            Err(e) => return Ok(Check::Failed(format!("cannot update .gitignore: {e}"))),
+        };
+        let committed = if rendered {
+            // Lockfile-only: commit just what keel changed, never the rest of the worktree.
+            let mut res = Ok(());
+            if lockfile {
+                res = git::commit_path(r, &cx.dir, "Cargo.lock", "keel: add Cargo.lock");
+            }
+            if res.is_ok() && ignored {
+                res = git::commit_path(r, &cx.dir, ".gitignore", "keel: ignore .keel");
+            }
+            res
+        } else {
+            git::commit_all(r, &cx.dir, &format!("keel: render {tpl}"))
+        };
+        if let Err(e) = committed {
             return Ok(Check::Failed(e));
         }
         self.check(cx)
@@ -183,8 +208,8 @@ mod tests {
         assert!(pos("git checkout -b keel/bootstrap") < pos("git add -- keel.toml"));
         assert!(pos("git add -- keel.toml") < pos(kc));
         assert!(pos(kc) < pos(new));
-        assert!(pos(new) < pos("git add -A"));
-        assert!(pos("git add -A") < pos("git commit -m keel: render rust"));
+        assert!(pos(new) < pos("git add -A -- . :(exclude).keel"));
+        assert!(pos("git add -A -- . :(exclude).keel") < pos("git commit -m keel: render rust"));
         assert_eq!(
             r.calls()
                 .iter()
@@ -289,5 +314,44 @@ mod tests {
         let l = lines(&r);
         assert!(l.contains(&"cargo generate-lockfile".to_string()));
         assert!(!l.iter().any(|x| x.starts_with("splice")), "{l:?}");
+        // On the work branch, committing only Cargo.lock (and the .keel ignore).
+        let pos = |p: &str| {
+            l.iter()
+                .position(|x| x == p)
+                .unwrap_or_else(|| panic!("{p} in {l:?}"))
+        };
+        assert!(pos("git checkout -b keel/bootstrap") < pos("cargo generate-lockfile"));
+        assert!(l.contains(&"git add -- Cargo.lock".to_string()));
+        assert!(!l.iter().any(|x| x.starts_with("git add -A")), "{l:?}");
+    }
+
+    #[test]
+    fn keel_dir_is_gitignored_and_committed_with_the_render() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join(".gitignore"), "target\n").unwrap();
+        let r = fake();
+        let _ = apply(&r, d.path(), "rust");
+        let g = std::fs::read_to_string(d.path().join(".gitignore")).unwrap();
+        assert!(g.lines().any(|l| l == ".keel/"), "{g}");
+        let l = lines(&r);
+        let p = |s: &str| l.iter().position(|x| x == s).unwrap();
+        assert!(
+            p(
+                "splice --json --yes new gh:keelstackhq/hull//template-rust . --force --piece rust-cli:my-cli --data no_placeholder=true"
+            ) < p("git add -A -- . :(exclude).keel")
+        );
+    }
+
+    #[test]
+    fn full_source_of_the_rust_template_gets_the_rust_flags() {
+        let d = tempfile::tempdir().unwrap();
+        let r = fake();
+        let _ = apply(&r, d.path(), "gh:keelstackhq/hull//template-rust");
+        assert!(
+            lines(&r)
+                .iter()
+                .any(|l| l.starts_with("splice --json --yes new")
+                    && l.ends_with("--data no_placeholder=true"))
+        );
     }
 }

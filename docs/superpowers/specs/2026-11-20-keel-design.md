@@ -106,7 +106,7 @@ every `check` only and marks work `would-run`; it stops after the first human ga
 |---|----|-------------------|-------|
 | 1 | `preflight` | `node --version` ≥ 24, `gh auth status`, `gh api user` (login), `git --version`; repo exists (`gh repo view`); `-C` is a git checkout whose `origin` is the repo; each tool's `--version` equals its pin | install each tool not at its pin (§6) |
 | 2 | `apps` | Claude and Renovate apps installed on the repo (`gh api user/installations`, then the installation's repositories when `repository_selection` is `selected`) | none: human gate; prints the install link and polls up to `--wait` |
-| 3 | `render` | `.splice/lock.toml` exists and `Cargo.lock` exists when `Cargo.toml` does | branch (§5.1); commit `keel.toml` alone (splice refuses a dirty tree); `splice pieces --json` validates piece names; `splice --json --yes new <source> . --force --piece …` (rust: `--data no_placeholder=true`); `cargo generate-lockfile` when needed; commit |
+| 3 | `render` | `.splice/lock.toml` exists and `Cargo.lock` exists when `Cargo.toml` does | branch (§5.1, switched before any commit); commit `keel.toml` alone (splice refuses a dirty tree); `splice pieces --json` validates piece names; `splice --json --yes new <source> . --force --piece …` (rust: `--data no_placeholder=true`); `cargo generate-lockfile` when needed; ensure `.keel/` is in `.gitignore`; commit (a lockfile-only re-run commits just `Cargo.lock`) |
 | 4 | `governance` | `.bosun/version` exists; with `plan`, `bosun plan import FILE --dry-run` reports nothing to create | `bosun init --owner <gh login> --branch <current> --no-pr` (+ `--stack rust` for the rust template); labels fallback (§10); then `bosun plan import FILE` |
 | 5 | `settings` | `hoist --json check` exits 0 | `hoist --json apply --yes`; hoist human steps become keel's human step |
 | 6 | `token` | `gh api repos/R/environments/ENV/secrets/NAME` succeeds | with `--token-stdin`: read stdin, `gh secret set NAME --env ENV --repo R` (value on stdin). Without: human gate with the PAT link (§7) |
@@ -116,9 +116,15 @@ every `check` only and marks work `would-run`; it stops after the first human ga
 
 ### 5.1 Branch
 
-Steps 3–8 work on one branch: the current branch when it is not the default branch, else
-`keel.toml` `branch` (default `keel/bootstrap`), created from the default branch. keel never
-merges, tags, releases, publishes or force-pushes.
+Steps 3–8 work on one branch, resolved by `steps::work_branch`: the current branch when it is not
+the default branch and HEAD is not detached, else `keel.toml` `branch` (default `keel/bootstrap`).
+Render, governance and doctor call `git::ensure_branch` before they commit or push: it checks the
+branch out when it exists locally, else fetches `origin/<branch>` (best effort) and tracks it when
+the remote has it (a re-run from a fresh clone resumes), else creates it. It fails, so nothing is
+committed or pushed, when the target is the default branch. Doctor and merge only resolve the
+name (no switching): after the merge, on the default branch, they look up the PR of the manifest
+branch. Commits never include `.keel/` (`git add -A -- . ':(exclude).keel'`). keel never merges,
+tags, releases, publishes or force-pushes.
 
 ### 5.2 Tool exit codes
 

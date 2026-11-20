@@ -43,8 +43,24 @@ pub fn current_branch(r: &dyn Runner, dir: &Path) -> Result<String, String> {
     Ok(o.stdout.trim().to_string())
 }
 
-/// §5.1: stay on the current branch unless it is the default branch (or detached); then use
-/// `branch`, created from the default branch (or checked out when it already exists).
+/// §5.1: the branch steps 3-8 work on: `current` unless it is the default branch (or a detached
+/// HEAD); then the manifest's `branch`.
+pub fn resolve_branch(current: &str, default: &str, branch: &str) -> String {
+    if current.is_empty() || current == "HEAD" || current == default {
+        branch.to_string()
+    } else {
+        current.to_string()
+    }
+}
+
+fn ok(r: &dyn Runner, dir: &Path, args: &[&str]) -> bool {
+    git(r, dir, args).code == 0
+}
+
+/// Switch to the work branch (§5.1) and return its name. Stays on the current branch unless it is
+/// the default branch (or detached). Then `branch`: checked out when it exists locally, tracked
+/// from `origin/<branch>` when only the remote has it (after a best-effort fetch), else created.
+/// Never returns the default branch: that is an error, so nothing is committed or pushed there.
 pub fn ensure_branch(
     r: &dyn Runner,
     dir: &Path,
@@ -52,32 +68,57 @@ pub fn ensure_branch(
     branch: &str,
 ) -> Result<String, String> {
     let cur = current_branch(r, dir)?;
-    if cur != default_branch && cur != "HEAD" && !cur.is_empty() {
+    let target = resolve_branch(&cur, default_branch, branch);
+    if target == default_branch {
+        return Err(format!(
+            "refusing to commit or push on the default branch {default_branch}; \
+             set `branch` in keel.toml to another name"
+        ));
+    }
+    if target == cur {
         return Ok(cur);
     }
-    let exists = git(
-        r,
-        dir,
-        &[
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            &format!("refs/heads/{branch}"),
-        ],
-    )
-    .code
-        == 0;
-    let c = if exists {
-        Cmd::new("git", &["checkout", branch])
+    let local = format!("refs/heads/{target}");
+    let remote = format!("refs/remotes/origin/{target}");
+    let c = if ok(r, dir, &["rev-parse", "--verify", "--quiet", &local]) {
+        Cmd::new("git", &["checkout", &target])
     } else {
-        Cmd::new("git", &["checkout", "-b", branch])
+        // Best effort: offline or a missing remote branch is fine.
+        let _ = git(r, dir, &["fetch", "origin", &target]);
+        if ok(r, dir, &["rev-parse", "--verify", "--quiet", &remote]) {
+            let upstream = format!("origin/{target}");
+            Cmd::new("git", &["checkout", "-b", &target, "--track", &upstream])
+        } else {
+            Cmd::new("git", &["checkout", "-b", &target])
+        }
     }
     .dir(dir);
     let o = r.run(&c);
     if o.code != 0 {
         return Err(failure(&c, &o));
     }
-    Ok(branch.to_string())
+    Ok(target)
+}
+
+/// Make sure `.gitignore` lists `entry` (e.g. `.keel/`); true when the file changed.
+pub fn ensure_ignored(dir: &Path, entry: &str) -> std::io::Result<bool> {
+    let p = dir.join(".gitignore");
+    let cur = std::fs::read_to_string(&p).unwrap_or_default();
+    let bare = entry.trim_end_matches('/');
+    if cur
+        .lines()
+        .any(|l| matches!(l.trim().trim_start_matches('/').trim_end_matches('/'), x if x == bare))
+    {
+        return Ok(false);
+    }
+    let mut next = cur;
+    if !next.is_empty() && !next.ends_with('\n') {
+        next.push('\n');
+    }
+    next.push_str(entry);
+    next.push('\n');
+    std::fs::write(&p, next)?;
+    Ok(true)
 }
 
 /// Commit only `path` when it has uncommitted changes (or is untracked); other staged or
@@ -104,9 +145,9 @@ pub fn commit_path(r: &dyn Runner, dir: &Path, path: &str, message: &str) -> Res
     Ok(())
 }
 
-/// `git add -A` then commit; "nothing to commit" is fine.
+/// `git add -A` (never `.keel/`, keel's own scratch dir) then commit; "nothing to commit" is fine.
 pub fn commit_all(r: &dyn Runner, dir: &Path, message: &str) -> Result<(), String> {
-    let add = Cmd::new("git", &["add", "-A"]).dir(dir);
+    let add = Cmd::new("git", &["add", "-A", "--", ".", ":(exclude).keel"]).dir(dir);
     let o = r.run(&add);
     if o.code != 0 {
         return Err(failure(&add, &o));
@@ -122,6 +163,85 @@ pub fn commit_all(r: &dyn Runner, dir: &Path, message: &str) -> Result<(), Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::exec::{FakeRunner, Out};
+
+    fn base(head: &str) -> FakeRunner {
+        FakeRunner::new().on(&["git", "rev-parse", "--abbrev-ref", "HEAD"], Out::ok(head))
+    }
+
+    fn lines(r: &FakeRunner) -> Vec<String> {
+        r.calls().iter().map(|c| c.line()).collect()
+    }
+
+    #[test]
+    fn existing_remote_branch_is_tracked() {
+        let r = base("main\n")
+            .on(&["git", "rev-parse", "--verify"], Out::with(1, "", ""))
+            .on(
+                &[
+                    "git",
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    "refs/remotes/origin/keel/bootstrap",
+                ],
+                Out::ok(""),
+            )
+            .on(&["git", "fetch"], Out::ok(""))
+            .on(&["git", "checkout"], Out::ok(""));
+        let b = ensure_branch(&r, Path::new("."), "main", "keel/bootstrap").unwrap();
+        assert_eq!(b, "keel/bootstrap");
+        let l = lines(&r);
+        assert!(
+            l.contains(&"git fetch origin keel/bootstrap".to_string()),
+            "{l:?}"
+        );
+        assert!(
+            l.contains(&"git checkout -b keel/bootstrap --track origin/keel/bootstrap".to_string())
+        );
+    }
+
+    #[test]
+    fn failed_fetch_still_creates_the_branch() {
+        let r = base("HEAD\n")
+            .on(&["git", "rev-parse", "--verify"], Out::with(1, "", ""))
+            .on(&["git", "fetch"], Out::with(128, "", "offline"))
+            .on(&["git", "checkout"], Out::ok(""));
+        ensure_branch(&r, Path::new("."), "main", "keel/bootstrap").unwrap();
+        assert!(lines(&r).contains(&"git checkout -b keel/bootstrap".to_string()));
+    }
+
+    #[test]
+    fn default_branch_is_never_the_target() {
+        let r = base("main\n");
+        let e = ensure_branch(&r, Path::new("."), "main", "main").unwrap_err();
+        assert!(e.contains("default branch"), "{e}");
+        assert!(!lines(&r).iter().any(|l| l.starts_with("git checkout")));
+    }
+
+    #[test]
+    fn commit_all_excludes_keel_dir() {
+        let r = FakeRunner::new()
+            .on(&["git", "add"], Out::ok(""))
+            .on(&["git", "commit"], Out::ok(""));
+        commit_all(&r, Path::new("."), "m").unwrap();
+        assert_eq!(lines(&r)[0], "git add -A -- . :(exclude).keel");
+    }
+
+    #[test]
+    fn ensure_ignored_appends_once() {
+        let d = tempfile::tempdir().unwrap();
+        assert!(ensure_ignored(d.path(), ".keel/").unwrap());
+        assert!(!ensure_ignored(d.path(), ".keel/").unwrap());
+        std::fs::write(d.path().join(".gitignore"), "target").unwrap();
+        assert!(ensure_ignored(d.path(), ".keel/").unwrap());
+        assert_eq!(
+            std::fs::read_to_string(d.path().join(".gitignore")).unwrap(),
+            "target\n.keel/\n"
+        );
+        std::fs::write(d.path().join(".gitignore"), "/.keel\n").unwrap();
+        assert!(!ensure_ignored(d.path(), ".keel/").unwrap());
+    }
 
     #[test]
     fn origin_forms() {
